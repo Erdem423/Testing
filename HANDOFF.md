@@ -58,7 +58,7 @@ These are documented in code comments (`tests/stripe/c-data-correctness.js`, `te
 .github/workflows/nightly-test.yml - scheduled CI (see section 6)
 README.md                          - full documentation, keep this in sync with any changes
 STRIPE_TEST_SCENARIOS.md           - per-test-category breakdown of what each step checks
-package.json                       - scripts: test, test:unit, test:integration, test:watch, web
+package.json                       - scripts: test, test:watch, web
 
 helpers/
   peakaClient.js          - thin wrapper over the Peaka Partner API (some endpoint paths are
@@ -84,9 +84,6 @@ tests/stripe/
 
 jest/
   stripe/connector.test.js  - the 5 test.concurrent() blocks, buildFreshCtx(), afterAll cleanup
-  unit/
-    pairwiseGenerate.test.js - unit tests for the homemade generator (10 tests)
-    pictWrapper.test.js      - unit tests for the real-PICT wrapper (7 tests, genuinely invokes the binary)
   browserReporter.js         - custom Jest reporter streaming results onto reporterBus
   reporterBus.js             - shared EventEmitter, browserReporter.js + server.js both use it
 
@@ -123,14 +120,13 @@ tools/pict/
 
 **Required GitHub secrets** (see README for the full table): `PEAKA_API_KEY`, `PEAKA_PROJECT_ID`, `STRIPE_TEST_TOKEN`, `PEAKA_CATALOG_ID`, `PEAKA_SCHEMA_NAME`, `NUM_CUSTOMERS`, `EXPECTED_CUSTOMER_COUNT_NON_CACHE`, optionally `SLACK_WEBHOOK_URL`.
 
-**Not yet done**: splitting CI so unit tests (`npm run test:unit` — fast, free, no credentials needed) run on every push, while integration tests stay on the nightly schedule. Discussed and clearly scoped, not yet built into the workflow file.
+Dedicated unit tests (`jest/unit/`, covering `helpers/pairwiseGenerate.js` and `helpers/pictWrapper.js`) were deliberately removed — this suite is scoped to the credentialed integration tests only now, so there's no separate fast/free tier to split CI around.
 
 ---
 
 ## 7. Known gotchas worth knowing before continuing
 
 - **`tests/stripe/meta.js`'s step lists have already drifted stale twice** — both `C` and `F` gained a `"resolve catalog name"` step when the catalog-name bug got fixed, but `meta.js` wasn't updated at the same time. If you add/remove/rename a `step(...)` call in any `tests/stripe/*.js` file, update `meta.js` in the same change.
-- **Jest 30 renamed `--testPathPattern` to `--testPathPatterns`** (plural) — caught this via the `test:unit`/`test:integration` npm scripts silently failing with the old flag name.
 - **Jest's per-test timeout matters for anything that polls a cache to completion** — `C` and `D` both got `120000` (120s) as their `test.concurrent()`'s third argument, since `pollCacheUntilComplete` can take up to ~100s worst case (20 attempts × 5s). `C` originally didn't have this override and started timing out at Jest's 30s default the moment its own cache-comparison step was added — if you add a new slow step to any test, check whether its timeout needs raising too.
 - **Don't leave stale duplicate files behind after restructuring.** When files moved from flat `tests/*.js` + `jest/stripe-connector.test.js` into nested `tests/stripe/*.js` + `jest/stripe/connector.test.js`, old copies were left behind locally on one occasion and caused real, confusing failures (Jest picked up both old and new, the old ones crashed on stale import paths). If you ever restructure file locations again, explicitly delete the old ones, don't just add the new ones alongside.
 
@@ -144,8 +140,7 @@ The current 3-pane layout (folder tree in the left sidebar / center results list
 
 ## 9. Clear next steps, roughly in order of natural progression
 
-1. **Wire the pairwise generators into an actual test** — pick either `pairwiseGenerate.js` or `pictWrapper.js`, generate real combinations of `Table`/`CacheSchedule`/`QueryFormat`/`QueryMechanism`, and write a new step (in `tests/stripe/` or a new category) that runs a real `createCache`/`executeQuery` for each generated row and asserts a general property (e.g. "never a raw 500").
-2. **Split CI**: fast unit tests on every push, slow integration tests nightly (scoped and discussed, not yet built).
-3. **A second connector** (Mongo/Supabase) — the folder-discovery architecture is ready for this with zero core changes; would be the first real test of whether the "generic" design actually holds up.
-4. **Real per-step live tracking** in the web dashboard, if the request/response detail view becomes valuable enough to justify instrumenting `tests/stripe/*.js` further.
-5. Revisit the "interaction testing" ideas discussed at length (deliberately combining operations that touch the same resource, beyond the one `C`/`D` collision already found and fixed) — genuinely promising territory, but explicitly *not yet built*, since the discussion concluded that hand-picking a small, targeted "conflict matrix" of plausible pairs is more tractable than exhaustive or fully-randomized concurrent combination testing given real API rate limits and cost.
+1. **Wire the pairwise generators into an actual test** — pick either `pairwiseGenerate.js` or `pictWrapper.js`, generate real combinations of `Table`/`CacheSchedule`/`QueryFormat`/`QueryMechanism`, and write a new step (in `tests/stripe/` or a new category) that runs a real `createCache`/`executeQuery` for each generated row and asserts a general property (e.g. "never a raw 500"). Note: their old dedicated unit tests were removed, so correctness would need to come from this new scenario's own assertions.
+2. **A second connector** (Mongo/Supabase) — the folder-discovery architecture is ready for this with zero core changes; would be the first real test of whether the "generic" design actually holds up.
+3. **Real per-step live tracking** in the web dashboard, if the request/response detail view becomes valuable enough to justify instrumenting `tests/stripe/*.js` further.
+4. Revisit the "interaction testing" ideas discussed at length (deliberately combining operations that touch the same resource, beyond the one `C`/`D` collision already found and fixed) — genuinely promising territory, but explicitly *not yet built*, since the discussion concluded that hand-picking a small, targeted "conflict matrix" of plausible pairs is more tractable than exhaustive or fully-randomized concurrent combination testing given real API rate limits and cost.

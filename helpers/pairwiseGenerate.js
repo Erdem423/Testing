@@ -23,11 +23,12 @@
  * millions), each greedy step evaluates every possible combination and picks
  * the true best one - not an approximation.
  *
- * Verified (see jest/unit/pairwiseGenerate.test.js):
- *   - Every required pair is independently re-verified as covered (not just
- *     trusting the algorithm's own internal bookkeeping)
- *   - Same seed produces identical output every time; different seeds
- *     produce genuinely different (but still fully covering) output
+ * Design properties (no longer covered by dedicated unit tests - see
+ * HANDOFF.md section 6/9):
+ *   - Every required pair should be coverable, independent of the
+ *     algorithm's own internal bookkeeping
+ *   - Same seed should produce identical output every time; different seeds
+ *     should produce genuinely different (but still fully covering) output
  *   - Benchmarked against a known published PICT example (5 binary
  *     parameters, published result: 7 rows) - this implementation produced
  *     6 rows, in the same quality range as the real tool
