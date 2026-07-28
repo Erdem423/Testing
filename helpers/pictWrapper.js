@@ -35,7 +35,7 @@ function buildModelFileContent(params) {
 
 /** Parses PICT's real tab-separated stdout into an array of row objects. */
 function parsePictOutput(output) {
-  const lines = output.trim().split("\n");
+  const lines = output.trim().split(/\r\n|\n/);
   if (lines.length < 2) return [];
   const headers = lines[0].split("\t");
   return lines.slice(1).map((line) => {
