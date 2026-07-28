@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Peaka Test</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <div class="app">
+
+    <!-- Top bar -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark"><span></span></div>
+        <div class="brand-text">
+          <span class="brand-name">Peaka Test</span>
+          <span class="brand-workspace">Connector test suites</span>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <button id="run-all-btn" class="btn btn-secondary">Run All</button>
+        <button id="run-selected-btn" class="btn btn-primary" disabled>
+          <span id="run-spinner" class="spinner hidden"></span>
+          <span id="run-selected-label">Run Selected (0)</span>
+        </button>
+      </div>
+    </header>
+
+    <div id="config-warning" class="config-warning hidden" role="alert">
+      <strong>Credentials not configured.</strong> Edit <code>.env</code> in this project folder, then reload this page.
+      <ul id="config-errors"></ul>
+    </div>
+
+    <div class="main-panes">
+
+      <!-- Left: folder tree (each discovered connector folder is a collapsible section) -->
+      <aside class="pane pane-left">
+        <div id="folder-tree" class="folder-tree"></div>
+      </aside>
+
+      <!-- Center: test results -->
+      <section class="pane pane-center">
+        <div class="center-header">
+          <div class="center-header-left">
+            <span class="center-title">Test Results</span>
+            <div id="badges" class="badges hidden">
+              <span class="badge badge-pass"><span id="pass-count">0</span> passed</span>
+              <span id="badge-fail" class="badge badge-fail hidden"><span id="fail-count">0</span> failed</span>
+              <span id="badge-pending" class="badge badge-pending hidden"><span id="pending-count">0</span> pending</span>
+            </div>
+          </div>
+          <button id="clear-btn" class="link-btn hidden">Clear results</button>
+        </div>
+        <div class="center-body">
+          <div id="results-list" class="results-list hidden"></div>
+          <div id="empty-no-selection" class="empty-state">
+            <span class="empty-title">No scenarios selected</span>
+            <span class="empty-sub">Check scenarios on the left, then click Run Selected to execute them.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right: detail panel -->
+      <aside class="pane pane-right">
+        <div id="detail-empty" class="empty-state detail-empty">
+          <span class="empty-title">No scenario selected</span>
+          <span class="empty-sub">Run a scenario and click it to inspect the result.</span>
+        </div>
+        <div id="detail-content" class="detail-content hidden">
+          <div class="detail-header">
+            <span id="detail-name" class="detail-name"></span>
+            <div class="detail-meta">
+              <span id="detail-status-badge" class="status-badge"></span>
+              <span id="detail-duration" class="detail-duration"></span>
+            </div>
+          </div>
+          <div id="detail-body" class="detail-body"></div>
+        </div>
+      </aside>
+
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

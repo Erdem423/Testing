@@ -1,0 +1,113 @@
+name: Nightly Peaka x Stripe Connector Tests
+
+# Scheduled, not on every push/PR - this suite mostly catches Peaka/Stripe-side
+# drift (real API behavior changing), not code regressions in this repo, so a
+# time-based cadence matters more than a commit-triggered one. Adjust the cron
+# below to whatever cadence makes sense - 06:00 UTC daily by default.
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch: {} # adds a manual "Run workflow" button in the Actions tab
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20 # generous - D and C's cache-polling steps alone can take up to ~100s each
+
+    env:
+      PEAKA_API_KEY: ${{ secrets.PEAKA_API_KEY }}
+      PEAKA_PROJECT_ID: ${{ secrets.PEAKA_PROJECT_ID }}
+      STRIPE_TEST_TOKEN: ${{ secrets.STRIPE_TEST_TOKEN }}
+      PEAKA_CATALOG_ID: ${{ secrets.PEAKA_CATALOG_ID }}
+      PEAKA_SCHEMA_NAME: ${{ secrets.PEAKA_SCHEMA_NAME }}
+      NUM_CUSTOMERS: ${{ secrets.NUM_CUSTOMERS }}
+      EXPECTED_CUSTOMER_COUNT_NON_CACHE: ${{ secrets.EXPECTED_CUSTOMER_COUNT_NON_CACHE }}
+      # No .env file needed - helpers/env.js already prioritizes real
+      # environment variables over .env, so these secrets just work as-is.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      # Defensive: if this binary was committed from a Windows machine, the
+      # executable bit may not have survived (Windows doesn't track Unix
+      # permissions the same way) - ensure it's executable regardless of
+      # what git recorded, since CI runs on ubuntu-latest.
+      - run: chmod +x tools/pict/pict-linux
+
+      # ---- Attempt 1 ----
+      # Deliberately NOT using jest.retryTimes() here - that discards the
+      # first failure's data entirely and reports only the last attempt,
+      # which would silently hide exactly the kind of real, intermittent
+      # product bugs this suite exists to catch (see the README's "Known
+      # gaps" for real examples this suite has already found). Instead: run
+      # once, and if it fails, run again as a SEPARATE, fully visible step -
+      # both attempts' results get uploaded as artifacts either way.
+      - name: Run tests (attempt 1)
+        id: attempt1
+        run: npm test
+        continue-on-error: true
+
+      - name: Rename attempt 1 results
+        if: always()
+        run: mv test-results/junit.xml test-results/junit-attempt1.xml || true
+
+      # ---- Attempt 2 (only runs if attempt 1 failed) ----
+      - name: Run tests (attempt 2 - only if attempt 1 failed)
+        id: attempt2
+        if: steps.attempt1.outcome == 'failure'
+        run: npm test
+        continue-on-error: true
+
+      - name: Rename attempt 2 results
+        if: always() && steps.attempt2.outcome != ''
+        run: mv test-results/junit.xml test-results/junit-attempt2.xml || true
+
+      # ---- Always upload whatever we have, from every attempt that ran ----
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-results
+          path: test-results/junit-attempt*.xml
+          retention-days: 30
+
+      # ---- Publish a readable summary in the Actions run page ----
+      - name: Publish test report
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: "test-results/junit-attempt*.xml"
+          fail_on_failure: false # this step just reports - the "Fail the job" step below decides pass/fail
+
+      # ---- Slack notification - only if it needed a retry OR failed both times ----
+      # A run that passes cleanly on attempt 1 sends NOTHING - only flakiness
+      # or a genuine failure is worth interrupting someone for.
+      - name: Notify Slack if a retry was needed or both attempts failed
+        if: steps.attempt1.outcome == 'failure'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL not set - skipping Slack notification. See README for setup."
+            exit 0
+          fi
+          if [ "${{ steps.attempt2.outcome }}" == "success" ]; then
+            STATUS_TEXT="⚠️ Attempt 1 FAILED, attempt 2 PASSED - this is flaky, not fixed. Worth investigating: <https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|view run>"
+          else
+            STATUS_TEXT="🔴 Both attempts FAILED - real, reproducible failure: <https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|view run>"
+          fi
+          curl -s -X POST -H 'Content-type: application/json' \
+            --data "{\"text\": \"$STATUS_TEXT\"}" \
+            "$SLACK_WEBHOOK_URL"
+
+      # ---- Actually fail the job if neither attempt passed ----
+      - name: Fail the job if both attempts failed
+        if: steps.attempt1.outcome == 'failure' && steps.attempt2.outcome == 'failure'
+        run: exit 1
