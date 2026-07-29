@@ -25,7 +25,7 @@ A real internal dependency chain — each step needs the previous one's output.
 
 Merged from the former separate `C: Data Correctness` and `D: Cache Behavior`. They were two concurrent tests that interfered with each other — caching a table the other was querying live returned 0 rows — so `D` had to deliberately avoid `C`'s tables. As one test the race is impossible, and the live-vs-cached difference becomes the point rather than a hazard.
 
-The ordering is load-bearing: **all uncached assertions must run before anything is cached**, because the live checks measure Peaka's ~100-row `COUNT(*)` cap and a cached table has no live query left to measure it with.
+The ordering is load-bearing: **all uncached assertions must run before anything is cached**, because the live checks measure Peaka's 100-row cap on live reads and a cached table has no live query left to measure it with. (That cap applies to *any* live query, not just `COUNT(*)` — a `SELECT ... LIMIT 500` also returns 100. See Known Gaps in the README.)
 
 ### Phase 1 — uncached
 
