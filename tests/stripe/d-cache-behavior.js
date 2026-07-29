@@ -7,6 +7,32 @@ const { pollCacheUntilComplete } = require("../../helpers/pollCacheUntilComplete
 // cache-target table" for why.
 const TABLES_USED_BY_DATA_CORRECTNESS = ["customers", "charges", "subscriptions", "invoices"];
 
+// Preferred cache targets, in order: core Stripe objects that C never touches.
+//
+// WHY A PREFERENCE LIST INSTEAD OF "first cacheable table": this used to just
+// take the first table listTables reported as cacheable, which is effectively
+// arbitrary - the Stripe catalog exposes 113 tables, 97 of them cacheable, and
+// the first one happened to be `terminal_configurations` (Stripe Terminal),
+// with `issuing_fraud_liability_debits` (Stripe Issuing) in an earlier run.
+// Caches on those tables NEVER complete (see the README's "Known gaps" for the
+// controlled experiment), so D spent ~100s polling and then failed on every
+// run without ever getting to the checks it actually exists to perform.
+//
+// The tables below are verified-good: `refunds` (85 rows) completed in ~8s and
+// `transfers` (0 rows) in ~2.5s in that same experiment. Emptiness is fine -
+// what matters is that the table is a core Stripe object whose sync actually
+// gets picked up.
+const PREFERRED_CACHE_TARGETS = [
+  "refunds",
+  "transfers",
+  "payouts",
+  "products",
+  "prices",
+  "coupons",
+  "payment_intents",
+  "balance_transactions",
+];
+
 /**
  * Cache Behavior: create a cache, poll its status to completion, verify a
  * non-cacheable table is rejected cleanly, and verify a duplicate cache on
@@ -34,9 +60,34 @@ async function runCacheBehavior(ctx) {
     assertStatus(res, 200, "listTables (selecting cache-target table)");
     ctx.tablesForD = res.body; // reused by the non-cacheable-table step below
 
-    const candidate = res.body.find(
-      (t) => t.isCacheable === true && !TABLES_USED_BY_DATA_CORRECTNESS.includes(t.tableName)
-    );
+    const isUsable = (t) =>
+      t && t.isCacheable === true && !TABLES_USED_BY_DATA_CORRECTNESS.includes(t.tableName);
+
+    // Prefer a known-good core table (see PREFERRED_CACHE_TARGETS above).
+    let candidate = null;
+    for (const preferred of PREFERRED_CACHE_TARGETS) {
+      const match = res.body.find((t) => t.tableName === preferred);
+      if (isUsable(match)) {
+        candidate = match;
+        break;
+      }
+    }
+
+    // Fall back to the old "first cacheable table" behavior only if none of
+    // the preferred tables exist in this catalog - better than not running at
+    // all, but log loudly, since this is exactly the path that lands on
+    // never-completing tables like terminal_configurations.
+    if (!candidate) {
+      candidate = res.body.find(isUsable);
+      if (candidate) {
+        console.log(
+          `warning: none of the preferred cache targets [${PREFERRED_CACHE_TARGETS.join(", ")}] are ` +
+            `available in this catalog - falling back to '${candidate.tableName}'. If this test then ` +
+            `times out polling for a completed sync, see the README's "Known gaps" on never-completing caches.`
+        );
+      }
+    }
+
     assert(
       candidate,
       `Could not find a cacheable table outside of [${TABLES_USED_BY_DATA_CORRECTNESS.join(
