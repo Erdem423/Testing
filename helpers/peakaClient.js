@@ -108,6 +108,16 @@ class PeakaClient {
     );
   }
 
+  // Returns { isCached, isCacheable, supportedCacheTypes } for one table.
+  // isCached is what makes "was this query served from cache?" an assertion
+  // rather than an assumption - see tests/stripe/c-data-and-cache.js.
+  isTableCached(catalogId, schemaName, tableName) {
+    return this._request(
+      "GET",
+      `/data/projects/${this.projectId}/catalogs/${catalogId}/schemas/${schemaName}/tables/${tableName}/isCached`
+    );
+  }
+
   // ---- Cache ----
   createCache({ catalogId, schemaName, tableName, incrementalCacheSchedule, fullRefreshCacheSchedule }) {
     return this._request("POST", `/data/projects/${this.projectId}/cache`, {

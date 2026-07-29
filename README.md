@@ -44,12 +44,13 @@ Output looks like:
 
 ```
 PASS jest/stripe/connector.test.js
-  ✓ A: Connection Setup
-  ✓ B: Catalog & Schema Discovery
-  ✓ C: Data Correctness
-  ✓ D: Cache Behavior
-  ✓ F: Error Handling & Edge Cases
+  ✓ A: Connection Setup (1929 ms)
+  ✓ B: Catalog & Schema Discovery (4040 ms)
+  ✓ C: Data Correctness & Cache Behavior (73059 ms)
+  ✓ F: Error Handling & Edge Cases (3670 ms)
 ```
+
+`C` dominates the runtime (~73s of the suite's ~85s): it runs every assertion twice with four cache syncs in between. The syncs are polled in parallel, so they cost the slowest (~50s) rather than the sum.
 
 ## Web Dashboard (alternative to the CLI)
 
@@ -64,7 +65,7 @@ Then open **http://localhost:3000**. It's a single persistent screen — the lef
 
 Inside the Stripe folder, the layout (based on a design mockup) is a 3-pane API-client-style view:
 
-- **Left** — search + checkbox list of all 5 tests (name, step count, category)
+- **Left** — search + checkbox list of all 4 tests (name, step count, category)
 - **Center** — "Test Results": one row per *currently selected* test, showing live status; click a row to inspect it
 - **Right** — the selected test's status, duration, and (on failure) the real error message Jest reported
 
@@ -90,9 +91,10 @@ One real UX limitation worth knowing: Jest's reporter API doesn't expose a "this
 |---|---|
 | **A: Connection Setup** | Creating a valid Stripe connection; cleanly rejecting an invalid token |
 | **B: Catalog & Schema Discovery** | Reading the pre-existing catalog, discovering its schema, discovering core tables (`customers`, `charges`), verifying cache-capability flags, and checking expected columns on `customers`/`charges`/`subscriptions`/`invoices` |
-| **C: Data Correctness** | Customer/charge/subscription/invoice counts and distributions against what the seed script is expected to have produced |
-| **D: Cache Behavior** | Creating a cache, polling its status to completion, rejecting cache creation on a non-cacheable table, rejecting a duplicate cache on the same table |
+| **C: Data Correctness & Cache Behavior** | Every count/distribution assertion run **twice** — once uncached, once served from cache — with the full cache lifecycle in between (create on all four data tables → poll to completion → verify `isCached`), plus non-cacheable rejection and duplicate-creation handling |
 | **F: Error Handling & Edge Cases** | Querying a non-existent table, pagination correctness (no overlapping/missing rows across pages) |
+
+**`C` and `D` used to be separate tests and were merged.** They interacted badly: creating a cache on a table the other test was querying live made the live count return `0`, because Peaka's query routing prefers an existing cache even mid-sync. Keeping them apart required `D` to deliberately avoid `C`'s tables. Merging removes the race outright — steps inside one test are plain sequential `await`s — and makes the live-vs-cached difference the *subject* of the test rather than a hazard to route around. It also cut resource churn: one test creating four caches, instead of two tests creating two caches on unrelated tables.
 
 Each test runs its checks as a **plain sequential sequence of steps** inside one function (see `tests/*.js`) — not as separate, independently-run sub-tests. If an early step in a test fails, later steps in that same test don't run (normal function behavior), and the failure message is prefixed with which step it came from, e.g.:
 
@@ -101,9 +103,9 @@ Each test runs its checks as a **plain sequential sequence of steps** inside one
   [list tables and check core tables present] Expected core tables missing...
 ```
 
-## Why the 5 tests run concurrently, safely
+## Why the 4 tests run concurrently, safely
 
-All 5 tests use Jest's real `test.concurrent()` — genuinely running in parallel (verified: 5 synthetic 500ms-delay tests completed in ~715ms total, not ~2500ms+, confirming real overlap). This is safe here specifically because:
+All 4 tests use Jest's real `test.concurrent()` — genuinely running in parallel (verified: 5 synthetic 500ms-delay tests completed in ~715ms total, not ~2500ms+, confirming real overlap). This is safe here specifically because:
 
 1. **Each test builds its own fresh `ctx`** (own `PeakaClient`, own tracking arrays) — nothing is shared or mutated across tests
 2. **All cross-step ordering lives inside one test's function body** as plain `await` calls — not spread across separate `test()` declarations
@@ -112,7 +114,7 @@ That second point matters: an earlier version of this suite kept `B1-B4`/`D1-D6`
 
 ## Cleanup
 
-Each test that creates real Peaka resources (connections in `A`, a cache in `D`) tracks them in its own `ctx`. `afterAll` cleans up everything across all 5 tests automatically once the run finishes.
+Each test that creates real Peaka resources (connections in `A`, four caches in `C`) tracks them in its own `ctx`. `afterAll` cleans up everything across all 4 tests automatically once the run finishes.
 
 To leave resources in place for inspection instead:
 
@@ -136,8 +138,7 @@ tests/
     meta.js                     - display name + scenario metadata for the dashboard
     a-connection-setup.js       - A: create/reject connections
     b-catalog-schema.js         - B: catalog -> schema -> tables -> cache flags -> columns
-    c-data-correctness.js       - C: seeded-data checks
-    d-cache-behavior.js         - D: create -> poll status -> non-cacheable -> duplicate
+    c-data-and-cache.js         - C: uncached checks -> cache all 4 tables -> same checks cached -> edge cases
     f-error-handling.js         - F: non-existent table, pagination
 jest/
   stripe/
@@ -174,15 +175,28 @@ The corrected paths were verified against the live API, not just the docs, by ca
 
 Three genuine product-behavior findings from real testing against a live Peaka project:
 
-1. **Duplicate cache creation doesn't match documented behavior - now accepted as confirmed behavior, not a failure.** Reproduced five times across two different tables (`customers`, `promotion_codes`): `500 Internal Server Error` once, when the original cache's sync was still `RUNNING`; `200 OK` (returning the existing cache's config unchanged) in every other observation, once the original cache had completed. Peaka's docs document `409`. After five consistent reproductions of `200`, the test now accepts `[200, 409]` rather than failing on every run - real, repeatable get-or-create behavior, not something worth a red test forever. `500` is still NOT accepted (that single observation happened during an actual race condition and is a genuine server error, worth investigating if it recurs). See the comment in `tests/d-cache-behavior.js` for the full history. Still worth mentioning to whoever owns the cache-creation service, since the docs and behavior disagree - just no longer something this suite treats as a failure.
+1. **Duplicate cache creation doesn't match documented behavior - now accepted as confirmed behavior, not a failure.** Reproduced five times across two different tables (`customers`, `promotion_codes`): `500 Internal Server Error` once, when the original cache's sync was still `RUNNING`; `200 OK` (returning the existing cache's config unchanged) in every other observation, once the original cache had completed. Peaka's docs document `409`. After five consistent reproductions of `200`, the test now accepts `[200, 409]` rather than failing on every run - real, repeatable get-or-create behavior, not something worth a red test forever. `500` is still NOT accepted (that single observation happened during an actual race condition and is a genuine server error, worth investigating if it recurs). See the comment in `tests/stripe/c-data-and-cache.js` for the full history. Still worth mentioning to whoever owns the cache-creation service, since the docs and behavior disagree - just no longer something this suite treats as a failure.
 
-2. **`COUNT(*)` queries appear hard-capped at exactly 100 rows.** Confirmed on two different tables: a `customers` table with 505 real rows (per the Stripe dashboard) consistently returns exactly `100`; an `invoices` count check with a 100-customer expectation also returned exactly `100` when the real count should have been ~25% of that. `100` matches Stripe's default List API page size - the likely cause is that Peaka's `COUNT(*)` isn't paginating through all pages before aggregating. See the comment in `tests/stripe/c-data-correctness.js`.
+2. **`COUNT(*)` queries are hard-capped at exactly 100 rows for live (uncached) reads — confirmed on all four data tables, and caching bypasses it completely.** Measured directly by running every count uncached, then caching all four tables and re-running the identical queries:
 
-   **Design note**: `"customer count matches seed"` (the live/uncached check) now deliberately asserts against `EXPECTED_CUSTOMER_COUNT_NON_CACHE` in `.env` (the *known cap value*, default `100`) rather than your real customer count (`NUM_CUSTOMERS`) - this turns it into a passing regression test ("is the live-query cap still exactly 100?") instead of a check designed to fail forever. If Peaka ever fixes the underlying pagination bug, this check should start failing - that's the intended signal, don't "fix" it by raising `EXPECTED_CUSTOMER_COUNT_NON_CACHE` to match your real count instead. Meanwhile `"customer count via completed cache"` still compares against your *real* count (`NUM_CUSTOMERS`) to test whether caching bypasses the cap - see that step's comment for the full reasoning.
+   | Table | live (uncached) | cached | real |
+   |---|---|---|---|
+   | `customers` | **100** | 505 | 505 |
+   | `charges` | **100** | 652 | 652 |
+   | `subscriptions` | **100** | 222 | 222 |
+   | `invoices` | **100** | 338 | 338 |
 
-3. **Some Stripe connector tables produce cache jobs that hang forever, with no error and no way to detect it.** This is the most serious of the three, and it's why `D: Cache Behavior` was failing on every run.
+   Every uncached count returns exactly `100` regardless of the table's real size. `100` matches Stripe's default List API page size, so the likely cause is that Peaka isn't paginating through all pages before aggregating.
 
-   `D` used to pick "the first cacheable table that `C` doesn't touch." The Stripe catalog exposes 113 tables (97 cacheable), and the first one is `terminal_configurations` (Stripe **Terminal**); an earlier run landed on `issuing_fraud_liability_debits` (Stripe **Issuing**). Caches on those tables never complete, so `D` polled for ~100s and failed before reaching any of the checks it exists to perform.
+   **Filtered counts are capped too, which locates the bug more precisely:** refunded charges returns `18` live vs `85` cached — i.e. 18 of the *first 100 rows*. So the cap is on the underlying scan, not on the aggregate. Any `WHERE` clause is being evaluated against a truncated row set, which means it silently affects far more than `COUNT(*)`.
+
+   **Design note**: the live checks assert against `EXPECTED_CUSTOMER_COUNT_NON_CACHE` in `.env` (the *known cap value*, default `100`) rather than real counts — a deliberate **passing** regression test ("is the cap still exactly 100?") instead of a check designed to fail forever. If Peaka fixes the pagination bug these should start failing; that's the intended signal. Don't "fix" them by raising `EXPECTED_CUSTOMER_COUNT_NON_CACHE`. The cached pass separately asserts every table's count is *not* the cap value, so if the bug ever spreads to cached reads that surfaces immediately too. See `tests/stripe/c-data-and-cache.js`.
+
+   **One assertion had to be replaced because of this.** The old invoice check expected "~25% of customers" and passed only because the cap clamped *both* sides to ~100. Against real data it's 338 invoices to 505 customers — 67%, nowhere near 25% — so it would have failed the moment it ran cached. Invoices are generated by subscriptions rather than by a flat percentage of customers, so it now asserts the relationship that actually holds: **at least one invoice per subscription** (338 to 222). Worth knowing that the original expectation was never validated against uncapped data.
+
+3. **Some Stripe connector tables produce cache jobs that hang forever, with no error and no way to detect it.** This is the most serious of the three, and it's why the old `D: Cache Behavior` test was failing on every run.
+
+   `D` picked "the first cacheable table that `C` doesn't touch." The Stripe catalog exposes 113 tables (97 cacheable), and the first one is `terminal_configurations` (Stripe **Terminal**); an earlier run landed on `issuing_fraud_liability_debits` (Stripe **Issuing**). Caches on those tables never complete, so `D` polled for ~100s and failed before reaching any of the checks it exists to perform.
 
    A controlled experiment across three tables isolates the cause:
 
@@ -207,11 +221,9 @@ Three genuine product-behavior findings from real testing against a live Peaka p
 
    Related: `isCacheable: true` does not imply the table is even readable. `issuing_dispute_settlement_details` is advertised as cacheable but querying it returns a passed-through Stripe error, `"Unrecognized request URL (GET: /v1/issuing/dispute_settlement_details)"`.
 
-   **What the test does now**: `D` picks from an ordered list of known-good core Stripe tables (`refunds`, `transfers`, `payouts`, ...) that `C` doesn't touch, falling back to the old "first cacheable" behavior with a loud warning if none are present. That makes `D` deterministic and fast (~8s instead of a 100s timeout) and gets it back to testing cache behavior. The hang itself is deliberately **not** asserted anywhere — it's documented here rather than left as a permanently red test.
+   **What the test does now**: `C` (the merged test) caches exactly the four data tables it asserts on — `customers`, `charges`, `subscriptions`, `invoices` — all four verified to sync cleanly in ~37-50s. The arbitrary table-selection logic that caused this is gone entirely. The hang itself is deliberately **not** asserted anywhere — it's documented here rather than left as a permanently red test.
 
    Also found while investigating: the documented schema-level cache-status endpoint (`GET /data/projects/{projectId}/catalog/{catalogId}/schema/{schemaName}/cache/status`) returns **`500 Internal Server Error`** rather than a list of statuses.
-
-   A follow-up check, `"customer count via completed cache"`, tests whether this cap is specific to *live* (non-cached) queries - it creates its own cache on `customers` (independent of D's cache; each scenario has its own `ctx`), waits for it to finish syncing via the shared `helpers/pollCacheUntilComplete.js` helper, then re-counts and compares against both the live count and the real expected count. Whichever way that comes out is useful information - if the cached count is still capped at ~100, the bug is broader than just live pass-through queries.
 
 ## Pairwise test generation with the real Microsoft PICT
 

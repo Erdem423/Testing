@@ -47,27 +47,31 @@ module.exports = {
       ],
     },
     {
-      name: "C: Data Correctness",
-      category: "Data",
+      // Merged from the former "C: Data Correctness" and "D: Cache Behavior".
+      // Runs every correctness assertion twice - once uncached, once served
+      // from cache - with the cache lifecycle in between. See
+      // tests/stripe/c-data-and-cache.js for why they had to become one test.
+      name: "C: Data Correctness & Cache Behavior",
+      category: "Data & Cache",
       steps: [
         "resolve catalog name",
-        "customer count matches seed",
-        "customer count via completed cache",
-        "charge outcome distribution roughly matches seed weights",
-        "subscription status distribution is sane",
-        "invoice count roughly consistent with ~25% of customers",
-        "field-level spot check on a specific seeded customer",
-      ],
-    },
-    {
-      name: "D: Cache Behavior",
-      category: "Cache",
-      steps: [
-        "select a cache-target table",
-        "create a one-time cache on the selected table",
-        "cache status eventually reports a completed sync",
+        "data-correctness tables all start uncached",
+        "live counts are capped at 100 on every table",
+        "live charge refund distribution is plausible",
+        "live subscription status distribution is sane",
+        "live field-level spot check on a specific seeded customer",
+        "create caches on all data-correctness tables",
+        "all caches reach a completed sync",
+        "data-correctness tables now report isCached",
+        "cached counts bypass the 100-row cap on every table",
+        "cached customer count matches the real seeded count",
+        "cached charge refund distribution is plausible",
+        "cached subscription status distribution is sane",
+        "cached invoice count is consistent with subscriptions",
+        "cached field-level spot check matches the live one",
+        "live vs cached comparison summary",
         "cache creation on a non-cacheable table fails cleanly",
-        "duplicate cache creation on the same table is handled cleanly",
+        "duplicate cache creation is handled cleanly",
       ],
     },
     {

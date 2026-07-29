@@ -1,19 +1,26 @@
 /**
  * Peaka x Stripe Connector Test Suite
  * -------------------------------------
- * Five consolidated tests, one per category:
+ * Four consolidated tests, one per category:
  *   A - Connection Setup
  *   B - Catalog & Schema Discovery
- *   C - Data Correctness
- *   D - Cache Behavior
+ *   C - Data Correctness & Cache Behavior
  *   F - Error Handling & Edge Cases
+ *
+ * C was previously two tests (C: Data Correctness and D: Cache Behavior).
+ * They were merged because they interacted: caching a table while the other
+ * test queried it live made the live count return 0, since Peaka's query
+ * routing prefers an existing cache even mid-sync. Keeping them separate
+ * required D to deliberately avoid C's tables; merging removes the race
+ * entirely and makes the live-vs-cached difference the point of the test.
+ * See tests/stripe/c-data-and-cache.js for the full reasoning.
  *
  * Each test internally runs its own sequence of checks (see tests/*.js) -
  * e.g. B's steps have a real dependency chain (read catalog -> discover
- * schema -> discover tables -> check cache flags -> check columns), and D's
- * steps do too (create cache -> poll status -> ...). That ordering is just
- * plain sequential `await` code inside one function, not something Jest's
- * scheduler needs to reason about.
+ * schema -> discover tables -> check cache flags -> check columns), and C's
+ * steps do too (measure uncached -> cache -> measure cached -> compare).
+ * That ordering is just plain sequential `await` code inside one function,
+ * not something Jest's scheduler needs to reason about.
  *
  * WHY test.concurrent() IS SAFE HERE (unlike an earlier version of this
  * suite that kept 21 separate scenarios): each of the 5 tests below builds
@@ -42,8 +49,7 @@ const { PeakaClient } = require("../../helpers/peakaClient");
 const { cleanup } = require("../../helpers/cleanup");
 const { runConnectionSetup } = require("../../tests/stripe/a-connection-setup");
 const { runCatalogSchemaDiscovery } = require("../../tests/stripe/b-catalog-schema");
-const { runDataCorrectness } = require("../../tests/stripe/c-data-correctness");
-const { runCacheBehavior } = require("../../tests/stripe/d-cache-behavior");
+const { runDataAndCache } = require("../../tests/stripe/c-data-and-cache");
 const { runErrorHandling } = require("../../tests/stripe/f-error-handling");
 
 loadDotEnv();
@@ -67,10 +73,10 @@ function buildFreshCtx() {
     schemaName,
     expectedCustomerCount: parseInt(process.env.NUM_CUSTOMERS || "500", 10),
     // Deliberately a SEPARATE env var from NUM_CUSTOMERS, not another parse
-    // of the same one - this is what C's live (uncached) count check now
-    // asserts against, as a passing regression test for the confirmed
-    // ~100-row COUNT(*) cap (see tests/stripe/c-data-correctness.js), rather
-    // than the real customer count.
+    // of the same one - this is what C's live (uncached) count checks assert
+    // against, as a passing regression test for the confirmed ~100-row
+    // COUNT(*) cap (see tests/stripe/c-data-and-cache.js), rather than the
+    // real customer count. Measured on all four tables, not just customers.
     expectedCustomerCountNonCache: parseInt(process.env.EXPECTED_CUSTOMER_COUNT_NON_CACHE || "100", 10),
     createdConnectionIds: [],
     createdCatalogIds: [],
@@ -84,7 +90,6 @@ function buildFreshCtx() {
 let ctxA = null;
 let ctxB = null;
 let ctxC = null;
-let ctxD = null;
 let ctxF = null;
 
 function requireCredentials() {
@@ -106,23 +111,17 @@ test.concurrent("B: Catalog & Schema Discovery", async () => {
 });
 
 test.concurrent(
-  "C: Data Correctness",
+  "C: Data Correctness & Cache Behavior",
   async () => {
     requireCredentials();
     ctxC = buildFreshCtx();
-    await runDataCorrectness(ctxC);
+    await runDataAndCache(ctxC);
   },
-  120000 // generous timeout - "customer count via completed cache" polls a cache to completion, same as D, can take up to ~100s
-);
-
-test.concurrent(
-  "D: Cache Behavior",
-  async () => {
-    requireCredentials();
-    ctxD = buildFreshCtx();
-    await runCacheBehavior(ctxD);
-  },
-  120000 // generous timeout - the status-polling step alone can take up to ~100s
+  // Generous: this one runs every correctness check twice (uncached, then
+  // cached) with four cache syncs in between. Measured ~2 min end to end -
+  // the syncs are polled in parallel, so they cost the slowest (~50s) rather
+  // than the sum, but pollCacheUntilComplete alone allows up to ~100s.
+  300000
 );
 
 test.concurrent("F: Error Handling & Edge Cases", async () => {
@@ -132,7 +131,7 @@ test.concurrent("F: Error Handling & Edge Cases", async () => {
 });
 
 afterAll(async () => {
-  const allCtxs = [ctxA, ctxB, ctxC, ctxD, ctxF].filter(Boolean);
+  const allCtxs = [ctxA, ctxB, ctxC, ctxF].filter(Boolean);
   if (allCtxs.length === 0) return;
 
   if (process.env.SKIP_CLEANUP === "true") {
