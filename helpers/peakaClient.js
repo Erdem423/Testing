@@ -4,24 +4,19 @@
  *
  * Uses global fetch (Node 18+). No external HTTP dependency needed.
  *
- * IMPORTANT - path verification status:
- * The following methods use paths CONFIRMED directly against Peaka's published
- * API docs (docs.peaka.com/api-reference/...):
- *   createConnection, createCatalog, listSchemas, listTables, listColumns,
- *   createCache, executeQuery, getCacheStatus
+ * PATH VERIFICATION STATUS: every path in this file has now been checked
+ * against Peaka's published API reference. The full endpoint index lives at
+ * https://docs.peaka.com/llms.txt (linked from the API introduction page) -
+ * use that if you need to verify a new endpoint, rather than trying to
+ * deep-fetch individual doc pages, which is what previously failed here and
+ * left seven of these paths marked "best-effort" for a while.
  *
- * The following methods use paths that are BEST-EFFORT / inferred from REST
- * convention (docs.peaka.com blocked deep-fetching these specific pages while
- * this file was written, or a search for the exact "Read Catalog" endpoint
- * came up empty) and should be double-checked against the Postman collection
- * before relying on them in CI:
- *   https://www.postman.com/peaka-api/peaka-api/collection/znssuf9/partner-api
- *   deleteConnection, deleteCatalog, deleteCache, getCatalog,
- *   triggerIncrementalUpdate, triggerFullRefresh, cancelFullRefresh
- *
- * If any of these 404, open the Postman collection above (or the OpenAPI spec
- * linked from the API introduction page) and correct the path here - the rest
- * of the test suite does not depend on getting these exactly right on day one.
+ * That verification found three genuinely wrong paths, since corrected:
+ *   triggerIncrementalUpdate  /incremental        -> /incrementalUpdate
+ *   triggerFullRefresh        /full-refresh       -> /fullRefreshUpdate
+ *   cancelFullRefresh         /full-refresh/cancel -> /cancelFullRefreshUpdate
+ * None of them had ever failed visibly, because no test calls these methods
+ * yet - worth knowing if you wire them into a scenario later.
  */
 
 
@@ -85,8 +80,8 @@ class PeakaClient {
     });
   }
 
-  // BEST-EFFORT path - see header. Fetches catalog details (id, name/slug,
-  // displayName, catalogType, connectionId) for a pre-existing catalog.
+  // Fetches catalog details (id, name, displayName, catalogType,
+  // connectionId) for a pre-existing catalog.
   getCatalog(catalogId) {
     return this._request("GET", `/data/projects/${this.projectId}/catalogs/${catalogId}`);
   }
@@ -129,15 +124,15 @@ class PeakaClient {
   }
 
   triggerIncrementalUpdate(cacheId) {
-    return this._request("POST", `/data/projects/${this.projectId}/cache/${cacheId}/incremental`);
+    return this._request("POST", `/data/projects/${this.projectId}/cache/${cacheId}/incrementalUpdate`);
   }
 
   triggerFullRefresh(cacheId) {
-    return this._request("POST", `/data/projects/${this.projectId}/cache/${cacheId}/full-refresh`);
+    return this._request("POST", `/data/projects/${this.projectId}/cache/${cacheId}/fullRefreshUpdate`);
   }
 
   cancelFullRefresh(cacheId) {
-    return this._request("POST", `/data/projects/${this.projectId}/cache/${cacheId}/full-refresh/cancel`);
+    return this._request("POST", `/data/projects/${this.projectId}/cache/${cacheId}/cancelFullRefreshUpdate`);
   }
 
   // ---- Queries ----

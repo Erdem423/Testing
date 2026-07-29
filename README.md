@@ -156,9 +156,21 @@ jest.config.js       - test discovery, timeout, JUnit XML reporter
 
 
 
-A few endpoint paths in `helpers/peakaClient.js` (`deleteConnection`, `deleteCache`, `getCatalog`, `triggerIncrementalUpdate`, `triggerFullRefresh`, `cancelFullRefresh`) are inferred from REST convention rather than confirmed against Peaka's docs — `docs.peaka.com` blocked deep-fetching those specific pages while this suite was built. Verify against the [Postman collection](https://www.postman.com/peaka-api/peaka-api/collection/znssuf9/partner-api) if any of them 404. `getCatalog` specifically has a built-in fallback: if it fails, the `B` test falls back to `PEAKA_CATALOG_NAME` from `.env` if you've set it.
+**Endpoint paths are all verified now.** Seven paths in `helpers/peakaClient.js` used to be marked "best-effort / inferred from REST convention," because `docs.peaka.com` blocked deep-fetching those individual pages while this suite was built. The full endpoint index at [`docs.peaka.com/llms.txt`](https://docs.peaka.com/llms.txt) (linked from the API introduction page) works where the individual page fetches didn't — use it if you need to verify a new endpoint.
 
-`createConnection`, `createCatalog`, `listSchemas`/`listTables`/`listColumns`, `createCache`, `executeQuery`, and `getCacheStatus` are all confirmed against Peaka's published docs.
+That check found **three genuinely wrong paths**, since corrected:
+
+| Method | Was | Now |
+|---|---|---|
+| `triggerIncrementalUpdate` | `/cache/{id}/incremental` | `/cache/{id}/incrementalUpdate` |
+| `triggerFullRefresh` | `/cache/{id}/full-refresh` | `/cache/{id}/fullRefreshUpdate` |
+| `cancelFullRefresh` | `/cache/{id}/full-refresh/cancel` | `/cache/{id}/cancelFullRefreshUpdate` |
+
+They had never failed visibly because no test calls those three methods yet. The other four previously-unconfirmed paths (`getCatalog`, `deleteCache`, `deleteConnection`, `deleteCatalog`) turned out to be exactly right, as did everything already marked confirmed (`createConnection`, `createCatalog`, `listSchemas`/`listTables`/`listColumns`, `createCache`, `executeQuery`, `getCacheStatus`).
+
+`getCatalog` still has a built-in fallback — if it fails, `PEAKA_CATALOG_NAME` from `.env` is used instead. That fallback existed because the path was unverified; now that it's confirmed, a failure there means something genuinely wrong (bad `PEAKA_CATALOG_ID`, auth) and the fallback can mask it. Left in place for now, flagged in `helpers/resolveCatalogName.js`.
+
+The corrected paths were verified against the live API, not just the docs, by calling each with a syntactically valid but non-existent `cacheId` (so nothing real got refreshed or cancelled). The distinction is clear-cut: the **old** paths return the generic framework "no route" 404 (`{"timestamp":..., "path":..., "error":"Not Found", "requestId":...}` — byte-identical in shape to a deliberately nonsense control path), while the **corrected** paths return real application-level handler errors that actually looked the cache up. A third docs-vs-behavior divergence turned up in the process: for a non-existent cache, `incrementalUpdate` and `fullRefreshUpdate` return **`400 WrongRequestException` "Cache settings not found"**, not the documented `404`. (`cancelFullRefreshUpdate` does return a proper `404`.) Minor, but it means don't write `assertStatus(res, 404, ...)` against those two on the strength of the docs alone.
 
 Two genuine product-behavior findings from real testing against a live Peaka project:
 

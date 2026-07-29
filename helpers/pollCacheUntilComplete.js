@@ -22,24 +22,33 @@ async function sleep(ms) {
  * @param {object} [options]
  * @param {number} [options.maxAttempts=20]
  * @param {number} [options.delayMs=5000]
- * @returns {Promise<{ skipped: boolean }>} - skipped:true if getCacheStatus
- *   returned 404 (best-effort endpoint path, see peakaClient.js header) -
- *   callers should treat this as "couldn't verify, not necessarily broken"
  */
 async function pollCacheUntilComplete(ctx, cacheId, options = {}) {
   const maxAttempts = options.maxAttempts || 20;
   const delayMs = options.delayMs || 5000; // up to ~100s total by default
 
-  const SUCCESS_STATUSES = new Set(["SUCCESS", "SUCCEEDED", "COMPLETED", "DONE", "FINISHED"]);
-  const FAILURE_STATUSES = new Set(["FAILED", "FAILURE", "ERROR", "ERRORED"]);
+  // Exactly Peaka's documented CacheStatus enum - NOT_INITIALIZED, RUNNING,
+  // COMPLETED, FAILED, CANCELLED, DELETED. NOT_INITIALIZED and RUNNING are
+  // the non-terminal ones, so they fall through and keep polling.
+  //
+  // CANCELLED and DELETED were missing here originally, which meant a cache
+  // in either state got polled all 20 attempts and then reported the generic
+  // "did not reach a completed state after ~100s" timeout instead of naming
+  // what actually happened. Earlier versions of both sets also listed values
+  // the API never returns (SUCCEEDED, DONE, ERRORED, ...) - harmless, but
+  // they implied a looser contract than Peaka actually has.
+  const SUCCESS_STATUSES = new Set(["COMPLETED"]);
+  const FAILURE_STATUSES = new Set(["FAILED", "CANCELLED", "DELETED"]);
 
   let lastBody = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const res = await ctx.client.getCacheStatus(cacheId);
-    if (res.status === 404) {
-      return { skipped: true };
-    }
+    // 404 here means "cache not found for this cacheId" (Peaka's documented
+    // response), which is a real error - we just created this cache. This
+    // used to be swallowed as {skipped:true} back when the endpoint path
+    // itself was unverified and a 404 might have meant "wrong path"; the
+    // path is confirmed now, so a 404 gets to fail like any other bad status.
     assertStatus(res, 200, "getCacheStatus");
     lastBody = res.body;
 
@@ -50,13 +59,16 @@ async function pollCacheUntilComplete(ctx, cacheId, options = {}) {
     const status = (rawStatus || "").toUpperCase();
 
     if (SUCCESS_STATUSES.has(status)) {
-      return { skipped: false };
+      return;
     }
     if (FAILURE_STATUSES.has(status)) {
-      const errorDetail = (execution && execution.error) || "no error detail provided";
+      // execution.error is an object in Peaka's schema, so stringify it -
+      // interpolating it directly just prints "[object Object]".
+      const rawError = execution && execution.error;
+      const errorDetail = rawError ? JSON.stringify(rawError) : "no error detail provided";
       throw new Error(`Cache sync reported failure (status=${status}): ${errorDetail}`);
     }
-    // Anything else (RUNNING, PENDING, QUEUED, etc.) - keep polling.
+    // Non-terminal (NOT_INITIALIZED, RUNNING) - keep polling.
     await sleep(delayMs);
   }
 
