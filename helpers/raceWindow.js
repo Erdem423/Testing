@@ -30,35 +30,72 @@ async function readCacheStatus(ctx, cacheId) {
 }
 
 /**
- * Polls until the cache reports RUNNING, then invokes `conflictFn` inside that
- * window.
+ * Generic form: polls `readStatus` until `isTarget(status)` holds, then invokes
+ * `conflictFn` inside that window.
  *
- * Deliberately does NOT throw if the window is missed - a sync that finishes
- * before we get inside it is a legitimate outcome, not a test failure. The
- * caller gets `enteredWindow: false` and should assert invariants only. A test
- * that goes red because a race didn't happen trains people to ignore red.
+ * Deliberately does NOT throw if the window is missed - an operation that
+ * finishes before we get inside it is a legitimate outcome, not a test
+ * failure. The caller gets `enteredWindow: false` and should assert invariants
+ * only. A test that goes red because a race didn't happen trains people to
+ * ignore red.
  *
- * @returns {Promise<{enteredWindow: boolean, statusAtFire: string, msToRunning: number|null, result: any}>}
+ * `isDone` lets the poll give up early once the operation has clearly finished,
+ * rather than burning the whole timeout.
+ *
+ * @returns {Promise<{enteredWindow: boolean, statusAtFire: string, msToWindow: number|null, result: any}>}
  */
-async function duringSync(ctx, cacheId, conflictFn, { pollMs = 250, maxWaitMs = 20000 } = {}) {
+async function duringState(readStatus, isTarget, conflictFn, { pollMs = 250, maxWaitMs = 20000, isDone } = {}) {
   const startedAt = Date.now();
   let statusAtFire = null;
-  let msToRunning = null;
+  let msToWindow = null;
 
   while (Date.now() - startedAt < maxWaitMs) {
-    const { status } = await readCacheStatus(ctx, cacheId);
-    statusAtFire = status;
-    if (status === "RUNNING") {
-      msToRunning = Date.now() - startedAt;
+    statusAtFire = await readStatus();
+    if (isTarget(statusAtFire)) {
+      msToWindow = Date.now() - startedAt;
       break;
     }
-    if (TERMINAL.includes(status)) break; // finished before we got in
+    if (isDone ? isDone(statusAtFire) : TERMINAL.includes(statusAtFire)) break;
     await sleep(pollMs);
   }
 
-  const enteredWindow = statusAtFire === "RUNNING";
+  const enteredWindow = isTarget(statusAtFire);
   const result = await conflictFn();
-  return { enteredWindow, statusAtFire, msToRunning, result };
+  return { enteredWindow, statusAtFire, msToWindow, result };
+}
+
+/**
+ * Cache-specific wrapper: fires `conflictFn` while the cache is RUNNING.
+ * Measured: a cache on `customers` reports RUNNING ~2s after createCache
+ * returns and stays there ~30s, so the window is comfortable.
+ */
+async function duringSync(ctx, cacheId, conflictFn, opts = {}) {
+  const out = await duringState(
+    async () => (await readCacheStatus(ctx, cacheId)).status,
+    (s) => s === "RUNNING",
+    conflictFn,
+    opts
+  );
+  return { ...out, msToRunning: out.msToWindow };
+}
+
+/**
+ * Export-specific wrapper: fires `conflictFn` while an export job is still
+ * PENDING or RUNNING. Export jobs on small result sets finish in a few
+ * seconds, so the window is much tighter than a cache sync - hence the faster
+ * default poll.
+ */
+async function duringExport(ctx, exportId, conflictFn, opts = {}) {
+  const EXPORT_TERMINAL = ["SUCCEEDED", "FAILED", "CANCELLED", "CANCELED", "EXPIRED"];
+  return duringState(
+    async () => {
+      const res = await ctx.client.getExport(exportId);
+      return res.status === 200 ? String(res.body.status).toUpperCase() : `HTTP_${res.status}`;
+    },
+    (s) => s === "PENDING" || s === "RUNNING",
+    conflictFn,
+    { pollMs: 150, maxWaitMs: 15000, isDone: (s) => EXPORT_TERMINAL.includes(s), ...opts }
+  );
 }
 
 /**
@@ -86,4 +123,13 @@ async function waitForSettled(ctx, cacheId, { pollMs = 3000, maxAttempts = 40 } 
   return { settled: false, status: last && last.status };
 }
 
-module.exports = { duringSync, simultaneously, waitForSettled, readCacheStatus, sleep, TERMINAL };
+module.exports = {
+  duringState,
+  duringSync,
+  duringExport,
+  simultaneously,
+  waitForSettled,
+  readCacheStatus,
+  sleep,
+  TERMINAL,
+};

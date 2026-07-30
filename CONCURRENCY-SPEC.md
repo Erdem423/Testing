@@ -1,7 +1,7 @@
 # Spec — deliberate concurrency conflicts on shared resources
 
-**Tier 1 is implemented** (`tests/stripe/races-tier1.js`, `npm run test:races`); Tiers 2-3 are still
-proposals. Companion to `STATE-MACHINE-SPEC.md`, which covers *sequential* state
+**Tiers 1 and 2 are implemented** (`tests/stripe/races-tier1.js`, `races-tier2.js`, `npm run test:races`);
+Tier 3 is still a proposal. Companion to `STATE-MACHINE-SPEC.md`, which covers *sequential* state
 transitions and states outright that it cannot express overlapping ones. This covers exactly that gap.
 
 ## Why this one has a track record
@@ -34,10 +34,10 @@ So: overlapping operations on shared resources is where this API actually misbeh
 
 | # | Overlap | What it targets |
 |---|---|---|
-| 4 | **`deleteCatalog` while a cache on it is syncing** | `helpers/cleanup.js` deletes cache→catalog→connection *precisely because* of dependency order. This tests whether the API enforces that or lets you orphan a cache. ⚠️ Genuinely risky — see Teardown |
-| 5 | **`deleteConnection` while a query through its catalog is in flight** | Same class, one level up |
-| 6 | **`deleteQuery` while an export of that query is running** | Does the export fail cleanly, or become a broken job referencing nothing? |
-| 7 | **`updateConnection` to a bad token while a query is in flight** | Also closes the untested half of spec scenario 05 — if the in-flight query succeeds *and* subsequent ones do too, credentials are cached somewhere they shouldn't be |
+| 4 | **`deleteCatalog` while a cache on it is syncing** | ⚠️ **Implemented but GATED** behind `RUN_RISKY_RACES=true`, and skipped by default — it can strand a cache no endpoint enumerates. Never run yet |
+| 5 | **`deleteConnection` while a query through its catalog is in flight** | ✅ **Tested — clean.** Queryable before, cleanly `400` after. The delete genuinely invalidates queries; nothing is served from stale connection state |
+| 6 | **`deleteQuery` while an export of that query is running** | ✅ **Tested — clean.** Delete returns `200` mid-export and the export still reaches `SUCCEEDED`. Deleting a query does not break its in-flight export |
+| 7 | **`updateConnection` to a bad token while a query is in flight** | ⚠️ **Inconclusive by construction** — see below. Peaka rejects an invalid token at update time (`400`), so the swap never happens and the credential-caching question stays open |
 
 ### Tier 3 — metadata and load
 
@@ -199,6 +199,36 @@ narrows the suspicion to the create path specifically rather than cache concurre
 
 The canary earns its place. It fired at 361ms and confirmed count `0`, which is what makes the two clean
 results trustworthy — without it, "no bug found" and "never entered the window" look identical.
+
+## Tier 2 results (implemented 2026-07-30)
+
+~17s, three steps run plus one skipped. All passing, **no bugs found** — which is a real result, and it
+narrows the earlier `500` to the cache-create path rather than to cross-resource concurrency generally.
+
+| Step | Outcome |
+|---|---|
+| **2.5** `deleteConnection` racing a query | Baseline `200` → raced query `200`, delete `200` → post-race query `400`. Clean |
+| **2.6** `deleteQuery` mid-export | Delete `200` while the export was `RUNNING`; export still finished `SUCCEEDED`. Clean |
+| **2.7** `updateConnection` to a bad token | Update **rejected with `400`** — Peaka validates the credential rather than accepting it blindly |
+| **2.4** `deleteCatalog` mid-sync | Skipped (gated) |
+
+**Two methodology corrections were needed, and both matter more than the results.**
+
+*2.5 needed a baseline.* The first version raced a delete against a query on a freshly created catalog and
+saw `400`. That was uninterpretable — it could mean "the connection was already gone" or simply "this
+catalog isn't queryable yet because metadata discovery hasn't finished". Adding a baseline query *before*
+the race is what makes the raced result mean anything, and it's what upgraded this step from noise to a
+clean confirmation.
+
+*2.7 was reporting a false finding.* It logged "the query still succeeds with an invalid token — the old
+credential is cached", which sounds like a serious bug. But `updateConnection` had returned `400`: the swap
+was **rejected**, so the connection still held the good token and the query succeeding proved nothing. The
+step now only interprets the post-swap query when the swap actually took.
+
+That leaves scenario 05's real question open. Probing it needs a token that is **well-formed and accepted at
+update time but unauthorised at query time** — a revoked or wrong-account key — not an obviously fake
+string. Worth noting the instructor's spec has the same gap: it says "update the token to an invalid value"
+without addressing that Peaka may refuse it outright.
 
 ## Open questions worth resolving first
 
