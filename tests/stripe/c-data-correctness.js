@@ -92,13 +92,7 @@ async function runDataCorrectness(ctx) {
     const cacheId = createRes.body.id;
     ctx.createdCacheIds.push(cacheId); // track for cleanup
 
-    const pollResult = await pollCacheUntilComplete(ctx, cacheId);
-    if (pollResult.skipped) {
-      console.log(
-        "skipped: getCacheStatus returned 404 - this endpoint path is best-effort, verify against Postman collection"
-      );
-      return;
-    }
+    await pollCacheUntilComplete(ctx, cacheId);
 
     const cachedCount = await countRows(ctx, "customers");
     console.log(

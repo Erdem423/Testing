@@ -68,12 +68,7 @@ async function runCacheBehavior(ctx) {
       console.log("skipped: no cacheId from the create-cache step (it must have failed)");
       return;
     }
-    const result = await pollCacheUntilComplete(ctx, ctx.cacheId);
-    if (result.skipped) {
-      console.log(
-        "skipped: getCacheStatus returned 404 - this endpoint path is best-effort, verify against Postman collection"
-      );
-    }
+    await pollCacheUntilComplete(ctx, ctx.cacheId);
   });
 
   await step("cache creation on a non-cacheable table fails cleanly", async () => {

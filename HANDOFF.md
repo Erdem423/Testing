@@ -61,8 +61,8 @@ STRIPE_TEST_SCENARIOS.md           - per-test-category breakdown of what each st
 package.json                       - scripts: test, test:unit, test:integration, test:watch, web
 
 helpers/
-  peakaClient.js          - thin wrapper over the Peaka Partner API (some endpoint paths are
-                             best-effort/unconfirmed - see file header comments)
+  peakaClient.js          - thin wrapper over the Peaka Partner API (all endpoint paths now
+                             verified against docs.peaka.com/llms.txt - see file header)
   assert.js                - lightweight assertion helpers (assert, assertStatus, assertStatusIn, assertApprox, assertEqual, assertIncludes)
   step.js                  - runs a named sub-step, tags thrown errors with which step failed
   env.js                   - .env loader + credential validation (detects placeholder values too)
@@ -133,6 +133,8 @@ tools/pict/
 - **Jest 30 renamed `--testPathPattern` to `--testPathPatterns`** (plural) — caught this via the `test:unit`/`test:integration` npm scripts silently failing with the old flag name.
 - **Jest's per-test timeout matters for anything that polls a cache to completion** — `C` and `D` both got `120000` (120s) as their `test.concurrent()`'s third argument, since `pollCacheUntilComplete` can take up to ~100s worst case (20 attempts × 5s). `C` originally didn't have this override and started timing out at Jest's 30s default the moment its own cache-comparison step was added — if you add a new slow step to any test, check whether its timeout needs raising too.
 - **Don't leave stale duplicate files behind after restructuring.** When files moved from flat `tests/*.js` + `jest/stripe-connector.test.js` into nested `tests/stripe/*.js` + `jest/stripe/connector.test.js`, old copies were left behind locally on one occasion and caused real, confusing failures (Jest picked up both old and new, the old ones crashed on stale import paths). If you ever restructure file locations again, explicitly delete the old ones, don't just add the new ones alongside.
+- **To verify a Peaka endpoint, use `docs.peaka.com/llms.txt`, not individual doc pages.** Deep-fetching specific `api-reference/...` pages is what failed early on and left seven paths in `peakaClient.js` marked "best-effort" for months; three of them were in fact wrong (`/incremental`, `/full-refresh`, `/full-refresh/cancel` — see the README's "Known gaps" for the corrections). `llms.txt` is the complete endpoint index and fetches fine, and each entry's `.md` page fetches fine too once you have its exact URL from there. There's also an OpenAPI spec at `docs.peaka.com/api-reference/peaka-openapi.json`.
+- **Peaka's cache status enum is exactly `NOT_INITIALIZED` / `RUNNING` / `COMPLETED` / `FAILED` / `CANCELLED` / `DELETED`.** `helpers/pollCacheUntilComplete.js` originally treated only `FAILED` as terminal-failure, so a cancelled or deleted cache polled the full ~100s and then reported a misleading generic timeout. If you touch that poller, keep both sets matched to this enum rather than guessing at plausible-sounding extra values.
 
 ---
 

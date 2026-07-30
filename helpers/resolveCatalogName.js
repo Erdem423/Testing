@@ -17,10 +17,16 @@ async function resolveCatalogName(ctx) {
   const res = await ctx.client.getCatalog(ctx.catalogId);
 
   if (!res.ok && ctx.catalogNameFromConfig) {
-    // getCatalog's path is best-effort (see peakaClient.js header) - if it
-    // doesn't match your Peaka instance, fall back to the queryable name you
-    // provided directly via PEAKA_CATALOG_NAME in .env rather than
-    // hard-failing over an unconfirmed endpoint path.
+    // Fall back to the queryable name provided directly via
+    // PEAKA_CATALOG_NAME in .env rather than hard-failing.
+    //
+    // NOTE: this fallback originally existed because getCatalog's path was
+    // unverified and a failure might have just meant "wrong path". That path
+    // is confirmed correct now, so a non-ok response here means something
+    // genuinely wrong (bad PEAKA_CATALOG_ID, auth, etc.) - and this fallback
+    // will quietly paper over it whenever PEAKA_CATALOG_NAME happens to be
+    // set. Worth reconsidering; left in place deliberately for now rather
+    // than changing test behavior as a drive-by.
     ctx.catalogName = ctx.catalogNameFromConfig;
     return;
   }
