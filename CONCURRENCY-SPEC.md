@@ -1,7 +1,7 @@
 # Spec — deliberate concurrency conflicts on shared resources
 
-**Tiers 1 and 2 are implemented** (`tests/stripe/races-tier1.js`, `races-tier2.js`, `npm run test:races`);
-Tier 3 is still a proposal. Companion to `STATE-MACHINE-SPEC.md`, which covers *sequential* state
+**All three tiers are implemented** — `tests/stripe/races-tier{1,2,3}.js`, run with `npm run test:races`
+(~268s, three sequential scenarios). One step remains gated and unrun: Tier 2 #4. Companion to `STATE-MACHINE-SPEC.md`, which covers *sequential* state
 transitions and states outright that it cannot express overlapping ones. This covers exactly that gap.
 
 ## Why this one has a track record
@@ -43,9 +43,10 @@ So: overlapping operations on shared resources is where this API actually misbeh
 
 | # | Overlap | What it targets |
 |---|---|---|
-| 8 | **`refreshMetadata` concurrent with `listTables` / `listColumns`** on the same catalog | Discovery reading metadata while metadata is being rebuilt |
-| 9 | **`refreshMetadata` twice concurrently** | |
-| 10 | **20 parallel identical queries** | Rate-limit behaviour; also covers the instructor's STRIPE-19 |
+| 8 | **`refreshMetadata` concurrent with `listTables` / `listColumns`** | ✅ **Tested — clean**, but on thin evidence: see the caveat in the results below |
+| 8b | **`listTables` during a cache sync** (the idea as originally stated) | ✅ **Tested — clean.** Prediction confirmed: metadata discovery is unaffected by an in-progress sync |
+| 9 | **`refreshMetadata` twice concurrently** | ✅ **Tested — clean.** Both `200`, catalog settles, discovery intact afterwards |
+| 10 | **20 parallel identical queries** | ✅ **Tested — clean.** All 20 returned `200` in ~2s, no rate limiting. Covers STRIPE-19 |
 
 **Note on the original idea:** `listTables` during a *cache* sync is included as #8's cheap sibling, but I'd
 expect it to be safe — `listTables` reads catalog metadata, not table data, so it never touches the syncing
@@ -229,6 +230,37 @@ That leaves scenario 05's real question open. Probing it needs a token that is *
 update time but unauthorised at query time** — a revoked or wrong-account key — not an obviously fake
 string. Worth noting the instructor's spec has the same gap: it says "update the token to an invalid value"
 without addressing that Peaka may refuse it outright.
+
+## Tier 3 results (implemented 2026-07-30)
+
+~48s, four steps, all passing, **no bugs found**.
+
+| Step | Outcome |
+|---|---|
+| **3.8** discovery during a metadata refresh | 113 tables before, 113 during, no empty or degraded result; refresh settled `NOT_ACTIVE` |
+| **3.8b** `listTables` during a cache sync | Entered the window; `200` with 113 tables. **Prediction confirmed** |
+| **3.9** two simultaneous `refreshMetadata` | Both `200`, settled `NOT_ACTIVE`, 113 tables intact afterwards |
+| **3.10** 20 parallel queries | **All 20 → `200` in 2057ms.** No `429`, no `5xx`, nothing hung |
+
+**3.8's evidence is thin, and worth saying so rather than claiming a clean bill of health.** Only *one*
+sample landed while the refresh was in a non-terminal state — a metadata refresh on a freshly created
+catalog settles in about a second, which is barely longer than one poll cycle. So the step proves discovery
+wasn't broken in that one sample, not that it can never be. Strengthening it would need a catalog with
+substantially more to rebuild, or a way to slow the refresh down. The invariant it checks (discovery must
+never return an *empty* table list mid-refresh) is the right one — there just isn't much window to check it in.
+
+**3.10 is the most reassuring result.** 20 concurrent queries all succeeded in ~2s with no backpressure at
+all, which says the API handles read concurrency comfortably. It also means the instructor's scenario 19
+passes trivially rather than revealing anything — worth knowing before treating it as a meaningful test.
+
+## Across all three tiers
+
+Ten conflicts tested, **one bug found** — the duplicate-`createCache` `500`, which was already suspected and
+is now deterministic. Everything else came back clean.
+
+That is a genuinely useful outcome, not a disappointing one: it isolates the failure to the **cache-create
+path specifically**, rather than leaving "Peaka might have concurrency problems" as an open worry across
+caches, connections, catalogs, queries, exports, metadata and parallel load.
 
 ## Open questions worth resolving first
 
