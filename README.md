@@ -204,7 +204,22 @@ The corrected paths were verified against the live API, not just the docs, by ca
 
 Three genuine product-behavior findings from real testing against a live Peaka project:
 
-1. **Duplicate cache creation doesn't match documented behavior - now accepted as confirmed behavior, not a failure.** Reproduced five times across two different tables (`customers`, `promotion_codes`): `500 Internal Server Error` once, when the original cache's sync was still `RUNNING`; `200 OK` (returning the existing cache's config unchanged) in every other observation, once the original cache had completed. Peaka's docs document `409`. After five consistent reproductions of `200`, the test now accepts `[200, 409]` rather than failing on every run - real, repeatable get-or-create behavior, not something worth a red test forever. `500` is still NOT accepted (that single observation happened during an actual race condition and is a genuine server error, worth investigating if it recurs). See the comment in `tests/stripe/c-data-and-cache.js` for the full history. Still worth mentioning to whoever owns the cache-creation service, since the docs and behavior disagree - just no longer something this suite treats as a failure.
+1. **Duplicate cache creation returns `500` while the first sync is still running — reproducible on demand.**
+
+   This was recorded for months as *inconsistent* behaviour: `500` once, `200` four times, across two tables, with the `500` written off as a one-off race worth investigating "if it recurs". It recurs every time. The behaviour isn't inconsistent — it's **state-dependent**:
+
+   | Cache state when the duplicate `createCache` is attempted | Result |
+   |---|---|
+   | first sync still `RUNNING` | **`500 Internal Server Error`** |
+   | first sync `COMPLETED` | `200` — silent get-or-create |
+
+   Peaka's docs specify `409` for both cases. Reproduced deliberately on 2026-07-30 by creating a cache on `customers`, polling until `getCacheStatus` reported `RUNNING` (~2s), then firing a second `createCache` — `500` on the first attempt. Every historical observation fits: the lone `500` was noted as occurring mid-sync, and all four `200`s after completion. Nobody had deliberately re-entered the failing window.
+
+   **Not destructive** — the original sync still reached `COMPLETED` (32s) and the cache deleted cleanly. So it's a bad response to a legitimate request rather than data loss.
+
+   The suite's duplicate-create step runs *after* the sync completes, which is why it sees a clean `200`/`409` and accepts `[200, 409]`. A dedicated concurrency suite (`npm run test:races`, see `CONCURRENCY-SPEC.md`) now reproduces the mid-sync `500` deliberately and asserts it stays non-destructive.
+
+   Two neighbouring races were tested at the same time and came back **clean**: `deleteCache` mid-sync returns `200` and correctly flips `isCached` to `false` with no orphan, and a simultaneous `triggerIncrementalUpdate` + `triggerFullRefresh` both return `200` and settle at `COMPLETED`. So the problem is specific to the *create* path, not to cache concurrency generally. Worth reporting upstream as: concurrent cache creation against an in-progress sync returns `500` rather than the documented `409`, reproducible in about two seconds.
 
 2. **Live (uncached) queries cannot return more than 100 rows. Any of them — not just `COUNT(*)`.** Caching bypasses it completely.
 

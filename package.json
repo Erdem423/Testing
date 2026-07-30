@@ -5,6 +5,7 @@
   "scripts": {
     "test": "jest",
     "test:watch": "jest --watch",
+    "test:races": "jest --config jest.races.config.js",
     "web": "node server.js"
   },
   "engines": {
