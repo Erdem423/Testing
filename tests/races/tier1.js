@@ -1,6 +1,5 @@
 const { assertStatus, assertStatusIn, assert } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
-const { resolveCatalogName } = require("../../helpers/resolveCatalogName");
 const { duringSync, simultaneously, waitForSettled, readCacheStatus, sleep } = require("../../helpers/raceWindow");
 
 // Chosen because it syncs SLOWLY (~37s), giving a wide window to fire into.
@@ -27,8 +26,46 @@ const SLOW_TABLE = "customers";
  * ones and produce failures that look like code regressions.
  */
 async function runTier1Races(ctx) {
-  await step("resolve catalog name", async () => {
-    await resolveCatalogName(ctx);
+  // Everything below operates on THESE, never on PEAKA_CATALOG_ID.
+  let raceCatalogId = null;
+  let raceCatalogName = null;
+
+  // WHY A THROWAWAY CATALOG, when Tier 1 previously used the shared one:
+  // these steps repeatedly cache `customers`, which is also one of the four
+  // tables `C` caches. Using the shared catalog meant an interrupted races run
+  // left `customers` cached there - and `C` responds to a pre-existing cache by
+  // silently skipping its entire live phase, including the 100-row cap
+  // regression. That is not hypothetical: a dashboard server died mid-run and
+  // left exactly that state behind.
+  //
+  // A catalog created on its own connection gets an INDEPENDENT copy of
+  // `customers` - same 505 rows, same ~37s sync, so the race window is
+  // unchanged - while being completely invisible to `C`. Tiers 2 and 3 already
+  // work this way; this brings Tier 1 in line.
+  await step("provision an isolated catalog for the races", async () => {
+    const name = `e2e-auto-race1-${ctx.runTag}`;
+    const conn = await ctx.client.createConnection({
+      name,
+      type: "stripe",
+      credential: { token: ctx.stripeToken },
+    });
+    assertStatus(conn, 200, "createConnection (race catalog)");
+    ctx.createdConnectionIds.push(conn.body.id);
+
+    const cat = await ctx.client.createCatalog({ name, connectionId: conn.body.id });
+    assertStatus(cat, 200, "createCatalog (race catalog)");
+    raceCatalogId = cat.body.id;
+    ctx.createdCatalogIds.push(raceCatalogId);
+
+    const read = await ctx.client.getCatalog(raceCatalogId);
+    assertStatus(read, 200, "getCatalog (race catalog)");
+    raceCatalogName = read.body.name;
+    assert(raceCatalogName, `Expected a queryable name on the race catalog: ${JSON.stringify(read.body)}`);
+    assert(
+      String(raceCatalogId) !== String(ctx.catalogId),
+      "The race catalog must never be the shared PEAKA_CATALOG_ID"
+    );
+    console.log(`races will run against throwaway catalog ${raceCatalogName} (${raceCatalogId})`);
   });
 
   /** Fresh cache on the slow table, guaranteed to start from uncached. */
@@ -36,7 +73,7 @@ async function runTier1Races(ctx) {
     // createCache is get-or-create, so this returns any existing cache, which
     // we then delete - a reliable "ensure uncached" with no list endpoint.
     const existing = await ctx.client.createCache({
-      catalogId: ctx.catalogId,
+      catalogId: raceCatalogId,
       schemaName: ctx.schemaName,
       tableName: SLOW_TABLE,
     });
@@ -46,7 +83,7 @@ async function runTier1Races(ctx) {
       await sleep(2000);
     }
     const res = await ctx.client.createCache({
-      catalogId: ctx.catalogId,
+      catalogId: raceCatalogId,
       schemaName: ctx.schemaName,
       tableName: SLOW_TABLE,
     });
@@ -61,36 +98,51 @@ async function runTier1Races(ctx) {
   // returns 0 rows. This is the confirmed bug that forced the C/D merge.
   //
   // If this step stops detecting it, the harness is no longer entering the
-  // window and every green result below is meaningless. It is a canary for
-  // the timing logic, NOT a bug report - so it never fails the run, it just
-  // reports loudly.
+  // window and every green result below is meaningless.
+  //
+  // THE TWO OUTCOMES ARE ASSERTED DIFFERENTLY, and the distinction is the
+  // whole point:
+  //
+  //   never entered the RUNNING window  -> HARD FAIL. Window entry is a
+  //       property of OUR harness, not of Peaka. If we cannot get inside the
+  //       window, every "clean" result below means only "the code ran", and
+  //       reporting the API as healthy on that basis would be worse than
+  //       having no tests at all.
+  //
+  //   entered, but the count was not 0  -> log only. That is PEAKA'S
+  //       behaviour, and a non-zero count most likely means the routing bug
+  //       was fixed - good news, which must not turn the suite red.
+  //
+  // An earlier version logged both and could never fail, which defeated the
+  // entire purpose of having a canary.
   await step("CANARY: querying rows mid-sync returns 0 (validates the harness)", async () => {
     const cacheId = await freshCache();
-    const sql = `SELECT COUNT(*) AS cnt FROM "${ctx.catalogName}"."${ctx.schemaName}"."${SLOW_TABLE}"`;
+    const sql = `SELECT COUNT(*) AS cnt FROM "${raceCatalogName}"."${ctx.schemaName}"."${SLOW_TABLE}"`;
     const outcome = await duringSync(ctx, cacheId, () => ctx.client.executeQuery({ statement: sql }, "SIMPLE"));
 
-    if (!outcome.enteredWindow) {
-      console.log(
-        `CANARY INCONCLUSIVE: never saw RUNNING (status at fire: ${outcome.statusAtFire}). ` +
-          `The harness may not be entering the sync window - treat the other steps with suspicion.`
-      );
-    } else {
-      const count = outcome.result.status === 200 ? Number(outcome.result.body.data[0].cnt) : null;
-      console.log(`CANARY: entered window at ${outcome.msToRunning}ms; mid-sync count = ${count}`);
-      if (count === 0) {
-        console.log("CANARY OK: reproduced the known routing bug - the harness is entering the window.");
-      } else {
-        console.log(
-          `CANARY: got ${count} rather than 0. Either Peaka fixed the routing bug (good news, verify by hand) ` +
-            `or the query landed after the sync completed.`
-        );
-      }
-    }
-
-    const settled = await waitForSettled(ctx, cacheId);
-    assert(settled.settled, `Cache never settled after the canary race (last: ${settled.status})`);
+    // Clean up before asserting, so a failure here doesn't strand the cache.
+    const settledEarly = await waitForSettled(ctx, cacheId);
     await ctx.client.deleteCache(cacheId);
     ctx.createdCacheIds = ctx.createdCacheIds.filter((id) => id !== cacheId);
+
+    assert(
+      outcome.enteredWindow,
+      `CANARY FAILED: never observed the cache in RUNNING state (status at fire: ${outcome.statusAtFire}). ` +
+        `The harness is not entering the sync window, so every other result in this file is meaningless - ` +
+        `they would pass without any race actually occurring. Fix the timing before trusting anything below.`
+    );
+
+    const count = outcome.result.status === 200 ? Number(outcome.result.body.data[0].cnt) : null;
+    console.log(`CANARY: entered window at ${outcome.msToRunning}ms; mid-sync count = ${count}`);
+    if (count === 0) {
+      console.log("CANARY OK: reproduced the known routing bug - the harness is entering the window.");
+    } else {
+      console.log(
+        `CANARY: entered the window but got ${count} rather than 0. Peaka may have fixed the routing bug - ` +
+          `verify by hand, and if so update the README and this step. Deliberately not failing: a fix is good news.`
+      );
+    }
+    assert(settledEarly.settled, `Cache never settled after the canary race (last: ${settledEarly.status})`);
   });
 
   // ---------------------------------------------------------------- TIER 1.1
@@ -112,7 +164,7 @@ async function runTier1Races(ctx) {
   await step("duplicate createCache mid-sync (known 500) is non-destructive", async () => {
     const cacheId = await freshCache();
     const outcome = await duringSync(ctx, cacheId, () =>
-      ctx.client.createCache({ catalogId: ctx.catalogId, schemaName: ctx.schemaName, tableName: SLOW_TABLE })
+      ctx.client.createCache({ catalogId: raceCatalogId, schemaName: ctx.schemaName, tableName: SLOW_TABLE })
     );
 
     if (!outcome.enteredWindow) {
@@ -161,7 +213,7 @@ async function runTier1Races(ctx) {
       // otherwise the cache is orphaned: gone from our tracking but still
       // live server-side, and there is no endpoint that lists orphans.
       await sleep(3000);
-      const isCached = await ctx.client.isTableCached(ctx.catalogId, ctx.schemaName, SLOW_TABLE);
+      const isCached = await ctx.client.isTableCached(raceCatalogId, ctx.schemaName, SLOW_TABLE);
       assertStatus(isCached, 200, "isTableCached after mid-sync delete");
       console.log(`  after a mid-sync delete, isCached = ${isCached.body.isCached}`);
       assert(
@@ -215,15 +267,45 @@ async function runTier1Races(ctx) {
     ctx.createdCacheIds = ctx.createdCacheIds.filter((id) => id !== cacheId);
   });
 
-  // Leaving the shared table cached would change what the main suite sees on
-  // its next run, so make the end state explicit rather than incidental.
+  // Verifies the end state rather than assuming it. The previous version only
+  // logged a warning here and then re-asserted that the HTTP call returned
+  // 200 - which assertStatus above had already done - so the one thing this
+  // step exists to check was the one thing it could not fail on.
+  //
+  // It now REMEDIES first and asserts second: a leftover cache is deleted, and
+  // the step only fails if it cannot be cleared. That ordering matters because
+  // failing outright would leave the mess in place for the next run, whereas
+  // the goal is to end clean.
   await step("the slow table is left uncached", async () => {
-    const res = await ctx.client.isTableCached(ctx.catalogId, ctx.schemaName, SLOW_TABLE);
+    let res = await ctx.client.isTableCached(raceCatalogId, ctx.schemaName, SLOW_TABLE);
     assertStatus(res, 200, "isTableCached (final state)");
+
     if (res.body.isCached) {
-      console.log(`warning: ${SLOW_TABLE} is still cached - a later step's cleanup did not take effect`);
+      console.log(`${SLOW_TABLE} is still cached - a previous step's cleanup did not take effect; clearing it`);
+      // createCache is get-or-create, so this hands back the existing cache.
+      const existing = await ctx.client.createCache({
+        catalogId: raceCatalogId,
+        schemaName: ctx.schemaName,
+        tableName: SLOW_TABLE,
+      });
+      if (existing.status === 200 && existing.body && existing.body.id) {
+        // Can't delete mid-sync, so let it settle first.
+        await waitForSettled(ctx, existing.body.id, { pollMs: 2000, maxAttempts: 30 });
+        const del = await ctx.client.deleteCache(existing.body.id);
+        console.log(`  deleteCache(${existing.body.id}) -> ${del.status}`);
+        ctx.createdCacheIds = ctx.createdCacheIds.filter((id) => id !== existing.body.id);
+      }
+      await sleep(2000);
+      res = await ctx.client.isTableCached(raceCatalogId, ctx.schemaName, SLOW_TABLE);
+      assertStatus(res, 200, "isTableCached (after remediation)");
     }
-    assertStatusIn({ status: res.status }, [200], "final isCached probe");
+
+    assert(
+      res.body.isCached === false,
+      `${SLOW_TABLE} is STILL cached after remediation. A leftover cache changes what later runs see - ` +
+        `when this happened on the shared catalog it made C skip its entire live phase, silently dropping ` +
+        `the 100-row cap regression. Needs manual cleanup in Peaka Studio.`
+    );
   });
 }
 

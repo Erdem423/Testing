@@ -17,9 +17,18 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
+const { assertSafeToRaceOrThrow } = require("../../helpers/racePreflight");
 const { runTier3Races } = require("../../tests/races/tier3");
 
 let ctx = null;
+
+// Fail fast if another run looks active - see helpers/racePreflight.js. These
+// tests manufacture races, so overlapping them with anything else produces
+// failures that look like regressions but are not. That has happened twice.
+beforeAll(async () => {
+  requireCredentials();
+  await assertSafeToRaceOrThrow(buildFreshCtx().client, (line) => console.log(line));
+}, 30000);
 
 test(
   "RACE-T3: Metadata races and parallel load",

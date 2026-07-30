@@ -12,7 +12,11 @@
 module.exports = {
   testEnvironment: "node",
   testMatch: ["**/jest/races/**/*.test.js"],
-  testTimeout: 600000,
+  // 1200s, not 600s. Tier 1 was measured at 407s under contention against the
+  // old 600s ceiling - close enough that a slower day would report a TIMEOUT
+  // rather than the real failure, which is exactly the misleading-failure mode
+  // this project avoids elsewhere.
+  testTimeout: 1200000,
   maxWorkers: 1,
   verbose: true,
   reporters: [

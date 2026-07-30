@@ -128,19 +128,58 @@ async function runDataAndCache(ctx) {
     assert(ctx.catalogId, "Requires PEAKA_CATALOG_ID to be set in .env");
     assert(ctx.schemaName, "Requires PEAKA_SCHEMA_NAME to be set in .env");
 
-    const alreadyCached = [];
-    for (const tableName of DC_TABLES) {
-      const res = await ctx.client.isTableCached(ctx.catalogId, ctx.schemaName, tableName);
-      assertStatus(res, 200, `isCached(${tableName})`);
-      if (res.body.isCached === true) alreadyCached.push(tableName);
+    const check = async () => {
+      const cached = [];
+      for (const tableName of DC_TABLES) {
+        const res = await ctx.client.isTableCached(ctx.catalogId, ctx.schemaName, tableName);
+        assertStatus(res, 200, `isCached(${tableName})`);
+        if (res.body.isCached === true) cached.push(tableName);
+      }
+      return cached;
+    };
+
+    let alreadyCached = await check();
+
+    // SELF-HEAL RATHER THAN SILENTLY SKIP.
+    //
+    // This used to just set skipLivePhase and print a note, which disabled
+    // EIGHT downstream steps - including the 100-row cap regression and the
+    // SELECT...LIMIT 500 assertion, the two most valuable checks in the file.
+    // The scenario still reported green. That is not hypothetical: a dashboard
+    // server died mid-run, left all four tables cached, and the next run
+    // quietly verified almost nothing.
+    //
+    // Leftover caches are debris, not a legitimate state, so clear them and
+    // run the real thing. createCache is get-or-create, so it hands back the
+    // existing cache to delete. skipLivePhase now only survives if remediation
+    // genuinely fails.
+    if (alreadyCached.length > 0) {
+      console.log(
+        `[${alreadyCached.join(", ")}] were already cached before this run (leftover from SKIP_CLEANUP=true, ` +
+          `an interrupted run, or a concurrent suite). Clearing them so the live phase can actually run.`
+      );
+      for (const tableName of alreadyCached) {
+        const existing = await ctx.client.createCache({
+          catalogId: ctx.catalogId,
+          schemaName: ctx.schemaName,
+          tableName,
+        });
+        if (existing.status === 200 && existing.body && existing.body.id) {
+          // Can't delete a cache mid-sync, so let it settle first.
+          await pollCacheUntilComplete(ctx, existing.body.id).catch(() => {});
+          const del = await ctx.client.deleteCache(existing.body.id);
+          console.log(`  cleared ${tableName} -> deleteCache ${del.status}`);
+        }
+      }
+      alreadyCached = await check();
     }
 
     if (alreadyCached.length > 0) {
       skipLivePhase = true;
       console.log(
-        `note: [${alreadyCached.join(", ")}] already cached before this run - skipping the live/uncached ` +
-          `phase, since a cached table can't measure the live COUNT(*) cap. Left over from SKIP_CLEANUP=true ` +
-          `or a failed cleanup; delete those caches to get the full run back.`
+        `WARNING: [${alreadyCached.join(", ")}] are STILL cached after remediation, so the live/uncached ` +
+          `phase cannot run - a cached table cannot measure the live cap. The steps below will report as ` +
+          `skipped and this run verifies substantially less than usual. Delete those caches in Peaka Studio.`
       );
     }
   });

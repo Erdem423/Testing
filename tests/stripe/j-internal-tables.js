@@ -16,21 +16,24 @@ const { step } = require("../../helpers/step");
 async function runInternalTables(ctx) {
   // Deliberately no spaces or punctuation - this name goes in a URL path.
   const tableName = `e2e_auto_table_${String(ctx.runTag).replace(/[^a-z0-9]/gi, "_")}`;
-  let created = false;
+  // NO `if (!created) return` GUARDS BELOW, deliberately.
+  //
+  // They used to wrap every step after the first, so a failed table creation
+  // turned the remaining five steps into silent passes - the scenario reported
+  // 6/6 steps in the dashboard while having verified almost nothing. Guarding
+  // against MISSING SEED DATA is reasonable (an environmental precondition);
+  // guarding against A PREVIOUS STEP FAILING is laundering a real failure into
+  // a pass. helpers/step.js already stops the sequence on a throw, so nothing
+  // is needed here.
 
   await step("create an internal table", async () => {
     const res = await ctx.client.createInternalTable(tableName);
     assertStatus(res, 200, `createInternalTable(${tableName})`);
     assertEqual(res.body.tableName, tableName, "created tableName");
-    created = true;
     ctx.createdInternalTableNames.push(tableName);
   });
 
   await step("list internal tables includes the new one", async () => {
-    if (!created) {
-      console.log("skipped: table was not created (previous step failed)");
-      return;
-    }
     const res = await ctx.client.listInternalTables();
     assertStatus(res, 200, "listInternalTables");
     assert(Array.isArray(res.body), "Expected an array of internal tables");
@@ -41,10 +44,6 @@ async function runInternalTables(ctx) {
   });
 
   await step("add columns to the table", async () => {
-    if (!created) {
-      console.log("skipped: table was not created");
-      return;
-    }
     const res = await ctx.client.addInternalTableColumns(tableName, [
       { name: "customer_id", dataType: "VARCHAR", displayName: "Customer ID", isNotNull: false, isUnique: false },
       { name: "segment", dataType: "VARCHAR", displayName: "Segment", isNotNull: false, isUnique: false },
@@ -54,10 +53,6 @@ async function runInternalTables(ctx) {
   });
 
   await step("list columns reflects what was added", async () => {
-    if (!created) {
-      console.log("skipped: table was not created");
-      return;
-    }
     const res = await ctx.client.listInternalTableColumns(tableName);
     assertStatus(res, 200, "listInternalTableColumns");
     const names = res.body.map((c) => c.name || c.columnName);
@@ -72,10 +67,6 @@ async function runInternalTables(ctx) {
   });
 
   await step("delete a column", async () => {
-    if (!created) {
-      console.log("skipped: table was not created");
-      return;
-    }
     const res = await ctx.client.deleteInternalTableColumn(tableName, "score");
     assertStatus(res, 200, "deleteInternalTableColumn(score)");
 
@@ -87,10 +78,6 @@ async function runInternalTables(ctx) {
   });
 
   await step("delete the table and confirm it is gone", async () => {
-    if (!created) {
-      console.log("skipped: table was not created");
-      return;
-    }
     const res = await ctx.client.deleteInternalTable(tableName);
     assertStatus(res, 200, `deleteInternalTable(${tableName})`);
     ctx.createdInternalTableNames = ctx.createdInternalTableNames.filter((n) => n !== tableName);

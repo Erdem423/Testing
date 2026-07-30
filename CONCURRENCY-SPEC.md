@@ -267,6 +267,24 @@ That is a genuinely useful outcome, not a disappointing one: it isolates the fai
 path specifically**, rather than leaving "Peaka might have concurrency problems" as an open worry across
 caches, connections, catalogs, queries, exports, metadata and parallel load.
 
+
+## Hardening pass (2026-07-30) — tests that could not fail
+
+A review found several steps that passed regardless of outcome. Fixed:
+
+| Was | Now |
+|---|---|
+| **Tier 1 ran against the SHARED catalog** — an interrupted run left `customers` cached, which makes `C` silently skip its whole live phase. This happened for real when a dashboard server died mid-run | Tier 1 provisions its **own connection + catalog**. The independent copy of `customers` has the same 505 rows and ~37s sync, so the race window is unchanged, but `C` can no longer be affected. Asserts the race catalog is never `PEAKA_CATALOG_ID` |
+| **The canary only logged.** If the harness stopped entering the sync window, all three tiers would go green having measured nothing | Hard-fails when `enteredWindow === false` — that's a property of *our harness*. A non-zero count still only logs, because that's *Peaka's* behaviour and a fix must not turn the suite red. Failure path verified reachable against a settled cache |
+| **The final step warned and then re-asserted the HTTP status** — the one thing it existed to check was the one thing it could not fail on | Remedies first (delete the leftover cache), then asserts `isCached === false`, failing only if it cannot be cleared |
+| **Nothing detected a concurrent run** | `helpers/racePreflight.js` refuses to start if the dashboard is serving on port 3000 or any cache is mid-sync. Verified: with the dashboard up, the suite now refuses with an actionable message instead of producing minutes of confusing red |
+| **600s timeout vs 407s observed** under contention | Raised to 1200s, so contention surfaces as the real failure rather than a timeout |
+
+The equivalent problem outside the races was fixed too: `C`'s `skipLivePhase` now **clears leftover caches
+and runs the live phase** rather than silently disabling eight steps, and the cascading
+`if (!created) return` guards in `j-internal-tables.js` plus the dead guard in `k-exports.js` were removed —
+both laundered real failures into passes.
+
 ## Open questions worth resolving first
 
 - ~~Does `getCacheStatus` report `RUNNING` promptly enough to make Pattern A reliable?~~ **Answered: yes.**

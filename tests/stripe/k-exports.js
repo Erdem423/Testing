@@ -75,11 +75,11 @@ async function runExports(ctx) {
     );
   });
 
+  // No `if (!reachedTerminal) return` guard here, deliberately: the previous
+  // step already asserts the export reached SUCCEEDED, so this could only ever
+  // trigger in a state that step should have failed on. Skipping instead would
+  // mask a genuine regression in export completion behind a green step.
   await step("a succeeded export exposes downloadable files", async () => {
-    if (!reachedTerminal) {
-      console.log("skipped: export never completed");
-      return;
-    }
     const res = await ctx.client.getExport(exportId);
     assertStatus(res, 200, "getExport (files)");
     assert(Array.isArray(res.body.files), `Expected a files array, got: ${JSON.stringify(res.body).slice(0, 300)}`);
