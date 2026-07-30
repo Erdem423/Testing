@@ -3,20 +3,26 @@
 Maps what this repo actually tests today against the 21-scenario E2E spec. Written by reading the
 test sources directly (`tests/stripe/*.js`), not from the docs, since those have drifted before.
 
-**Current suite:** 4 concurrent tests / 31 steps total — `A` (2 steps), `B` (8), `C` (18), `F` (3).
+**Current suite:** 12 scenarios / 97 steps. `A` (2), `B` (8), `C` (20), `F` (3) share one file as
+`test.concurrent()` blocks; `G` (8), `H` (6), `I` (8), `J` (6), `K` (6), `L` (5), `M` (17), `N` (8) each
+have their own file and run in separate Jest workers.
 
 ## Scoreboard
 
 | Status | Count | Scenarios |
 |---|---|---|
-| ✅ Covered | 1 | 17 |
-| 🟡 Mostly (one assertion short) | 1 | 16 |
-| 🟠 Partial | 8 | 01, 03, 06, 07, 09, 10, 15, 20 |
-| ❌ Missing | 11 | 02, 04, 05, 08, 11, 12, 13, 14, 18, 19, 21 |
+| ✅ Covered | 8 | 01, 08, 13, 14, 16, 17, 20, 21 |
+| 🟡 Mostly (one assertion short) | 1 | 02 |
+| 🟠 Partial | 8 | 03, 05, 06, 07, 09, 10, 15, 18 |
+| ❌ Missing | 4 | 04, 11, 12, 19 |
 
-The shape of the gap: **caching and data correctness are deep; everything else is thin or absent.**
-`C` alone accounts for 18 of 31 steps. Connection lifecycle is 2 steps, and the entire
-query/materialized-query/export surface is untested.
+**Previously 11 were missing; now 4.** Scenarios `G`–`N` were added to cover the base API endpoints, with
+scope taken from Peaka's own reference rather than the instructor's summary table — so they also cover
+endpoints that table omits (cache settings, batch creation, the three all-statuses variants, execution
+history, connector config, search, SQL transpile).
+
+What remains missing: 11 (aggregate cross-checks) and 12 (cross-catalog joins, blocked on the internal-table
+`INSERT` shape), plus two nobody has built yet — 04 empty-credential validation and 19 rate-limit resilience.
 
 ---
 
@@ -26,11 +32,11 @@ query/materialized-query/export surface is untested.
 
 | # | Scenario | Status | Where | Gap |
 |---|---|---|---|---|
-| 01 | Valid key → create, list, get | 🟠 Partial | `A` step 1 creates a connection and asserts `id` + `type` | No **ConnList**, no **ConnGet** (neither method exists on `PeakaClient`). **Credential masking is untested** — nothing verifies the Stripe key isn't echoed back in plaintext |
-| 02 | Delete + access deleted | ❌ Missing | `helpers/cleanup.js` deletes connections | Deletion happens but is never *asserted*: no 404-on-get check, no "queries through the dead catalog fail meaningfully" check |
+| 01 | Valid key → create, list, get | ✅ Covered | `G` steps 1–4, 8 | Create, list, get all asserted. **Credential masking is now tested** — `G` scans the whole serialized `getConnection` body for the raw token and for `sk_`/`rk_` prefixes |
+| 02 | Delete + access deleted | 🟡 Mostly | `G` step 8 | Deletion is asserted, and the connection is confirmed gone from both `getConnection` and `listConnections`. Not covered: querying *through* a catalog whose connection was deleted. **Note:** Peaka returns `400`, not the `404` this spec expects — see the comment in `g-connections.js` |
 | 03 | Invalid API key | 🟠 Partial | `A` step 2 sends `"not_a_real_token"` | Accepts `[200, 400, 401, 422]` and, on 200, only `console.log`s "verify downstream." The spec requires **following through** to catalog + table-list and asserting the failure actually surfaces somewhere. As written this step can pass while the bad token is silently accepted |
 | 04 | Empty / missing credential | ❌ Missing | — | No test for `credential: {}` or `token: ""` |
-| 05 | Credential update (break → fix) | ❌ Missing | — | `updateConnection` doesn't exist on the client. This is the credential-caching bug class — arguably the most interesting untested behavior in this section |
+| 05 | Credential update (break → fix) | 🟠 Partial | `G` step 5 updates the connection's **name** and reads it back | `updateConnection` exists now, but the interesting case is untested: swap to a *bad* token and confirm queries start failing. If they keep succeeding, credentials are cached somewhere they shouldn't be |
 
 ### Section B — Metadata / Discovery
 
@@ -38,7 +44,7 @@ query/materialized-query/export surface is untested.
 |---|---|---|---|---|
 | 06 | Table list + cache-eligibility fields | 🟠 Partial | `B` steps 3–4 | Core-table check covers only `customers` + `charges`; spec wants all four (`invoices`, `subscriptions` too). `supportedCacheTypes` is verified **only on `customers`**, not on every `isCacheable: true` table |
 | 07 | Column metadata (`charges`) | 🟠 Partial | `B` steps 5–8 check column **names** on 4 tables | **No type assertions** — spec wants `amount` numeric, `created` timestamp. Also `created` isn't in `EXPECTED_COLUMNS.charges` at all. Type checking is the part that catches Stripe API version drift, which is the stated purpose |
-| 08 | Metadata refresh flow | ❌ Missing | — | No client method, no test |
+| 08 | Metadata refresh flow | ✅ Covered | `L` — trigger, poll to terminal, confirm the catalog still lists schemas | Runs against a catalog `L` creates itself, so it can't disturb `B`/`C` reading the shared one |
 
 ### Section C — Query Execution
 
@@ -48,41 +54,50 @@ query/materialized-query/export surface is untested.
 | 10 | WHERE filters | 🟠 Partial | `C` uses `WHERE refunded = true`, `WHERE status = 'active'/'canceled'` | Only ever as `COUNT(*)`. **No test fetches rows and verifies each one satisfies its filter** — a filter could be silently ignored and the counts would still look plausible |
 | 11 | Aggregates vs. computed-from-raw | ❌ Missing | — | Nothing cross-checks a `SUM`/`COUNT` against totals computed client-side from raw rows. Notable: **this is a second, independent way to catch the `COUNT(*)` cap** |
 | 12 | Cross-catalog join (federation) | ❌ Missing | — | No internal-table methods (`PeakaTableCreate`/`Columns`/`Delete`), no join test |
-| 13 | Saved query lifecycle | ❌ Missing | — | No query CRUD methods at all |
-| 14 | Materialized query | ❌ Missing | — | No methods, no test |
+| 13 | Saved query lifecycle | ✅ Covered | `I` — CRUD, execute by **id**, execute by qualified **name**, SQL transpile | Probing settled the shape the reference omits: the saved-query branch keys off **`id`**, not `queryId` (which the instructor's spec guesses, and which returns 400). Execute-by-name has no working dedicated field — reached via the statement branch instead |
+| 14 | Materialized query | ✅ Covered | `N` — create, status, list statuses, refresh, cancel, recovery, `inputQueryRefId` variant, delete | `inputQueryRefId` turned out to be **optional** — `inputQuery` alone materializes fine |
 | 15 | Bad identifiers | 🟠 Partial | `F` step 2 covers a non-existent **table** | Missing bad **schema** and bad **column** variants (1 of 3) |
 
 ### Section D — Cache
 
 | # | Scenario | Status | Where | Gap |
 |---|---|---|---|---|
-| 16 | Cache lifecycle | 🟡 Mostly | `C` steps 7–9 (create → poll → `isCached: true`), steps 10–15 query through cache | Missing the final leg: after `deleteCache`, assert `isCached` flips back to **false** and the query still works (now live). Deletion happens in `afterAll` but is never asserted |
+| 16 | Cache lifecycle | ✅ Covered | `C` steps 7–9 create/poll/verify; `M` closes the loop by deleting and asserting `isCached` flips back to **false** | — |
 | 17 | Non-cacheable table rejection | ✅ Covered | `C` step 17 — asserts `400` + `errorCode: TABLE_NOT_CACHEABLE` | — |
-| 18 | Incremental refresh + data freshness | ❌ Missing | `triggerIncrementalUpdate` exists (path corrected in PR #3) but **nothing calls it** | Requires writing to the Stripe test account. This is the only genuine end-to-end data-flow test in the spec |
+| 18 | Incremental refresh + data freshness | 🟠 Partial | `M` triggers incremental *and* full refresh, and cancels both | The endpoints are exercised for the first time. Not covered: the **data-freshness** half — writing a new customer to Stripe and confirming it appears after a refresh |
 
 ### Section E — Resilience & Export
 
 | # | Scenario | Status | Where | Gap |
 |---|---|---|---|---|
 | 19 | Parallel query / rate-limit resilience | ❌ Missing | — | No concurrency-stress test |
-| 20 | Pagination beyond Stripe's page size | 🟠 Partial | `F` step 3 — `limit 20 / offset 20`, asserts no overlap | **Never crosses the 100-row boundary**, which is exactly where the cap lives. Spec wants `LIMIT 500`, >100 rows returned, no duplicates. As written it can't detect the pagination bug this project already documented |
-| 21 | CSV export | ❌ Missing | — | No export methods, no test |
+| 20 | Pagination beyond Stripe's page size | ✅ Covered | `C` asserts `LIMIT 500` returns exactly 100 live and **>100 cached** (measured: 500), both duplicate-free; `F` step 3 covers non-overlapping offset windows | The live half can only ever return 100 — that's the documented cap, asserted deliberately. The cached half is the only context where a >100-row result is obtainable at all |
+| 21 | CSV export | ✅ Covered | `K` — start, poll to `SUCCEEDED`, assert `rowCount` and a downloadable file URL, list, cancel (twice, for idempotency) | — |
 
 ---
 
-## Missing client methods
+## Client method coverage
 
-`helpers/peakaClient.js` has no equivalent for roughly half the spec's endpoint table:
+`helpers/peakaClient.js` now covers the data-plane surface: connections (create/list/get/update/delete +
+config), catalogs (create/read/list/delete/search/statistics), schemas/tables/columns, `isTableCached`,
+cache (create/batch/settings/status/history/all-statuses ×3/trigger ×2/cancel ×2/delete), queries
+(CRUD + execute), exports (create/read/list/cancel), metadata (refresh + status), Peaka internal tables
+(table and column CRUD), and SQL transpile.
 
-- **Connections:** `listConnections`, `getConnection`, `updateConnection`
-- **Queries:** create / list / get / update / delete
-- **Materialized queries:** status, refresh
-- **Exports:** create, get
-- **Metadata:** refresh, refresh-status
-- **Peaka internal tables:** create, add columns, delete
+Materialized queries and execute-by-saved-query-id were unblocked by probing the live API rather than the
+reference, which only names those request branches without expanding their fields:
+- **execute by saved query** keys off **`id`** — not `queryId` (which the instructor's spec guesses, and
+  which returns 400), nor `queryRefId`/`savedQueryId`, nor the id passed as a JSON number.
+- **`queryType: "MATERIALIZED"`** works with `inputQuery` alone; `inputQueryRefId` is optional and, when
+  given, copies the referenced query's SQL in.
 
-Present and correct: connections (create/delete), catalogs (create/read/delete), schemas/tables/columns,
-`isTableCached`, cache (create/status/delete/incremental/full-refresh/cancel), `executeQuery`.
+Still absent: **`INSERT` into an internal table** (blocks scenario 12), the query-builder's **`filters`**
+field (four shapes probed, all 400), and a dedicated **execute-by-name** branch — saved queries are reachable
+by qualified name through the statement branch instead, which is what `I` asserts.
+
+Endpoints deliberately not implemented because their paths weren't verified: `Export Table (async)`,
+`Update Column` (internal tables), `Update Query Path`, `Get Connection Detail`. Guessing a path is how
+three cache endpoints stayed wrong for months.
 
 ---
 

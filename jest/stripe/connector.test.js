@@ -47,6 +47,7 @@
 const { loadDotEnv, checkCredentials } = require("../../helpers/env");
 const { PeakaClient } = require("../../helpers/peakaClient");
 const { cleanup } = require("../../helpers/cleanup");
+const { withScenario } = require("../../helpers/stepReporter");
 const { runConnectionSetup } = require("../../tests/stripe/a-connection-setup");
 const { runCatalogSchemaDiscovery } = require("../../tests/stripe/b-catalog-schema");
 const { runDataAndCache } = require("../../tests/stripe/c-data-and-cache");
@@ -81,6 +82,8 @@ function buildFreshCtx() {
     createdConnectionIds: [],
     createdCatalogIds: [],
     createdCacheIds: [],
+    createdQueryIds: [],
+    createdInternalTableNames: [],
   };
 }
 
@@ -101,13 +104,13 @@ function requireCredentials() {
 test.concurrent("A: Connection Setup", async () => {
   requireCredentials();
   ctxA = buildFreshCtx();
-  await runConnectionSetup(ctxA);
+  await withScenario("A: Connection Setup", () => runConnectionSetup(ctxA));
 });
 
 test.concurrent("B: Catalog & Schema Discovery", async () => {
   requireCredentials();
   ctxB = buildFreshCtx();
-  await runCatalogSchemaDiscovery(ctxB);
+  await withScenario("B: Catalog & Schema Discovery", () => runCatalogSchemaDiscovery(ctxB));
 });
 
 test.concurrent(
@@ -115,7 +118,7 @@ test.concurrent(
   async () => {
     requireCredentials();
     ctxC = buildFreshCtx();
-    await runDataAndCache(ctxC);
+    await withScenario("C: Data Correctness & Cache Behavior", () => runDataAndCache(ctxC));
   },
   // Generous: this one runs every correctness check twice (uncached, then
   // cached) with four cache syncs in between. Measured ~2 min end to end -
@@ -127,7 +130,7 @@ test.concurrent(
 test.concurrent("F: Error Handling & Edge Cases", async () => {
   requireCredentials();
   ctxF = buildFreshCtx();
-  await runErrorHandling(ctxF);
+  await withScenario("F: Error Handling & Edge Cases", () => runErrorHandling(ctxF));
 });
 
 afterAll(async () => {

@@ -59,6 +59,27 @@ app.use(express.static(path.join(__dirname, "public")));
 let runInProgress = false;
 
 const TESTS_DIR = path.join(__dirname, "tests");
+const PORT = process.env.PORT || 3000;
+
+/**
+ * Live per-step events arrive here over HTTP from helpers/stepReporter.js,
+ * and get re-emitted onto the same bus the Jest reporter uses so they reach
+ * the browser through the existing SSE stream.
+ *
+ * WHY HTTP RATHER THAN THE SHARED BUS DIRECTLY: test files can't reach
+ * reporterBus. Everything a test requires goes through jest-runtime's
+ * sandboxed module registry, so a `require` of reporterBus from inside a test
+ * yields a different EventEmitter than this process holds. Reporters are
+ * exempt (Jest loads those itself), which is why browserReporter.js can use
+ * the bus but test code cannot. See helpers/stepReporter.js for the full note.
+ */
+app.post("/api/step-event", (req, res) => {
+  const event = req.body;
+  if (event && typeof event.type === "string") {
+    reporterBus.emit("event", event);
+  }
+  res.status(204).end();
+});
 
 /**
  * Scans tests/ for subfolders containing a meta.js, and returns each as a
@@ -160,6 +181,9 @@ app.get("/api/run-stream", async (req, res) => {
   reporterBus.on("event", onBusEvent);
 
   runInProgress = true;
+  // Tells helpers/stepReporter.js where to POST live step events. Set only
+  // for dashboard-launched runs, so a plain `npm test` stays a no-op.
+  process.env.PEAKA_STEP_REPORT_URL = `http://127.0.0.1:${PORT}/api/step-event`;
   try {
     await runCLI(
       {
@@ -188,12 +212,12 @@ app.get("/api/run-stream", async (req, res) => {
     send({ type: "fatal", message: err.message });
   } finally {
     reporterBus.off("event", onBusEvent);
+    delete process.env.PEAKA_STEP_REPORT_URL;
     runInProgress = false;
     res.end();
   }
 });
 
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Peaka Test dashboard running at http://localhost:${PORT}`);
   console.log("Press Ctrl+C to stop.");

@@ -1,6 +1,6 @@
 # Peaka × Stripe Connector — Test Coverage
 
-Four Jest tests (`jest/stripe/connector.test.js`), each running a sequence of internal steps (see `tests/stripe/*.js`). All 4 run concurrently via `test.concurrent()` — see the README's "Why the 4 tests run concurrently, safely" section for why that's safe.
+Twelve scenarios. `A`/`B`/`C`/`F` share `jest/stripe/connector.test.js` and run concurrently via `test.concurrent()`; `G`-`N` each have their own `jest/stripe/<name>.test.js` so Jest runs them in separate worker processes. All step logic lives in `tests/stripe/*.js` — see the README's "Why the 4 tests run concurrently, safely" section for why the shared-file four are safe.
 
 ## A: Connection Setup
 
@@ -34,6 +34,7 @@ The ordering is load-bearing: **all uncached assertions must run before anything
 | Resolve catalog name | `getCatalog`, falling back to `PEAKA_CATALOG_NAME` | A queryable catalog slug |
 | Tables all start uncached | `isCached` on all four data tables | All `false`; if any is `true` (leftover cache) the live phase is skipped with a clear log rather than failing |
 | Live counts capped at 100 | `COUNT(*)` on customers/charges/subscriptions/invoices | Every one returns exactly `EXPECTED_CUSTOMER_COUNT_NON_CACHE` (100) — a deliberate passing regression test for the cap |
+| Live SELECT capped at 100 | `SELECT id FROM charges LIMIT 500` on a 652-row table | Exactly 100 rows, duplicate-free. This is the form that actually corrupts data for a caller: an ordinary fetch silently returns a partial result set with no error and no flag |
 | Live charge refund distribution | Refunded vs total charges | ~15% (wide tolerance; measured over a capped 100-row sample) |
 | Live subscription distribution | active/canceled counts | Some present, and active+canceled ≤ total |
 | Live spot check | A specific seeded customer by name | Email matches what was seeded |
@@ -51,6 +52,7 @@ The ordering is load-bearing: **all uncached assertions must run before anything
 | Step | What it does | Expected result |
 |---|---|---|
 | Cached counts bypass the cap | Same `COUNT(*)` queries again | None returns exactly 100; all non-zero. Failing here would mean the cap reaches cached reads too — a broader bug, deliberately not tolerated |
+| Cached SELECT exceeds 100 | `SELECT id FROM charges LIMIT 500`, now cached | Returns >100 (measured: 500), duplicate-free. The only context in which a >100-row result is obtainable at all |
 | Cached customer count | vs `NUM_CUSTOMERS` | ≈ real count (505) |
 | Cached charge refund distribution | Refunded vs total, full table | ~15% |
 | Cached subscription distribution | active/canceled | active+canceled ≤ total |
@@ -71,6 +73,21 @@ The ordering is load-bearing: **all uncached assertions must run before anything
 |---|---|---|
 | Non-existent table | Query a table that doesn't exist | Clean 4xx, not a crash |
 | Pagination | Query `refunds` with `limit/offset` across two pages | No overlapping/missing rows between pages. Deliberately **not** `charges` — `C` caches that table, and querying it mid-sync returns 0 rows, which this step's empty-page guard would silently read as "no seed data" and skip |
+
+## G-N: Base API endpoint coverage
+
+One simple test per endpoint, with scope taken from Peaka's own API reference rather than a summary list. Each of these lives in its own test file, creates whatever resources it needs, and deletes them again.
+
+| Scenario | Endpoints | Notes |
+|---|---|---|
+| **G: Connection Endpoints** | create, list, get, update, delete, list/get connector config | Includes a **credential-masking** check: the serialized `getConnection` body is scanned for the raw token and for `sk_`/`rk_` prefixes. Deletion is asserted (Peaka returns `400`, not `404`) |
+| **H: Catalog Endpoints** | catalog create/list/delete, project search, table statistics | Uses a throwaway catalog; explicitly re-asserts that `PEAKA_CATALOG_ID` survived. Table statistics returns `400 "Catalog type: stripe is not being supported yet"` - asserted as known behaviour |
+| **I: Saved Query Endpoints** | query create/list/read/update/delete, SQL transpile | Needs no catalog. Transpile returns `{query}` though the docs say `{result}` - both accepted |
+| **J: Internal Table Endpoints** | table create/list/delete, column add/list/delete | Project-level, no catalog needed |
+| **K: Export Endpoints** | export create/read/list/cancel | Async: create returns **202**, cancel returns **204**. Polls to `SUCCEEDED`, then asserts a downloadable file URL. Cancel is called twice to check documented idempotency |
+| **L: Metadata Refresh Endpoints** | refresh, refresh status | Runs against a catalog it creates itself - refreshing the shared one would disturb `B` and `C`. Status comes back lower-kebab (`not-active`) though docs say `NOT_ACTIVE`; normalised before comparison |
+| **N: Materialized Query Endpoints** | create (via `queryType: MATERIALIZED`), read status, list statuses, refresh, cancel | A materialized query is just a saved query, so it is created/deleted through the ordinary query endpoints; `inputQueryRefId` is optional. Peaka spells this status **`CANCELED`** (one L) while cache statuses use `CANCELLED` (two) - a polling loop handling only one spelling hangs on the other. A *fresh* materialized query reports `COMPLETED` with null timestamps, meaning "nothing in flight", not "materialized" |
+| **M: Cache Management Endpoints** | settings get/update, batch create, all-statuses x3, execution history, trigger/cancel incremental + full refresh, delete | The first tests to call the four cache endpoints whose paths were corrected in PR #3. Schedule updates are a config round-trip, not a wait-for-fire. A malformed expression returns `200` and is silently ignored rather than the documented `400` - the test asserts the garbage is never *persisted*. The schema-level all-statuses variant returns `500` (known) |
 
 ## Extending
 

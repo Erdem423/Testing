@@ -17,7 +17,7 @@ A Jest test suite that validates Peaka's Stripe connector against the **real** P
 ### Four consolidated tests, not many small ones
 `A: Connection Setup`, `B: Catalog & Schema Discovery`, `C: Data Correctness & Cache Behavior`, `F: Error Handling` — each is ONE Jest `test.concurrent()` block that internally runs several named `step(...)` calls in sequence.
 
-**`C` and `D` were later merged into one test** (2026-07-29). They interacted: caching a table the other was querying live made the live count return 0, which `D` worked around by avoiding `C`'s tables. Merged, the race is impossible and the live-vs-cached difference becomes the subject of the test — every correctness assertion runs twice, uncached then cached, with the cache lifecycle in between. 18 steps, ~73s. See `tests/stripe/c-data-and-cache.js`.
+**`C` and `D` were later merged into one test** (2026-07-29). They interacted: caching a table the other was querying live made the live count return 0, which `D` worked around by avoiding `C`'s tables. Merged, the race is impossible and the live-vs-cached difference becomes the subject of the test — every correctness assertion runs twice, uncached then cached, with the cache lifecycle in between. 20 steps, ~74s. See `tests/stripe/c-data-and-cache.js`.
 
 **Why consolidated**: originally had 21 separate scenarios. The user explicitly asked to consolidate them ("I am not interested in testing endpoints one by one") specifically so `test.concurrent()` could be used safely — Jest's scheduler does **not** reliably preserve declaration order between `test.concurrent()` blocks and regular sequential tests (confirmed via a throwaway spike test: a concurrent test declared *between* two sequential ones finished before the first sequential one even started). Consolidating removed all *cross-test* ordering dependencies, so there's nothing left for Jest's scheduler to get wrong.
 
@@ -31,6 +31,8 @@ Each test's internal steps (e.g. `B` has 8: read catalog → list schemas → li
 `server.js` calls Jest's own `runCLI()` (the same function the `jest` CLI binary calls) with a custom reporter (`jest/browserReporter.js`) streaming results to the browser via a shared `EventEmitter` (`jest/reporterBus.js`) + Server-Sent Events. **Not** a duplicate test-running system — clicking "Run" in the browser runs the literal same Jest suite as `npm test`.
 
 **Real bug found while building this**: tried passing a live callback function through `runCLI()`'s config object — silently failed, because `runCLI` JSON-serializes its config internally, and `JSON.stringify` drops function properties without any error. Fixed by using a shared `EventEmitter` module instead (same-process communication, no serialization needed).
+
+**Live per-step reporting uses a different channel, and the reason is worth internalising.** The shared `EventEmitter` works for the *reporter* because Jest loads reporters itself, in the host process. **Test code cannot use it**: everything a test requires goes through jest-runtime's sandboxed module registry, so `require("../reporterBus")` inside a test returns a different instance than `server.js` holds — and scenarios `G`-`N` may run in separate worker processes entirely. So `helpers/step.js` POSTs step events to a localhost endpoint (`PEAKA_STEP_REPORT_URL`, set by `server.js`), which re-emits them onto the bus. Unset under `npm test`, so the CLI is unaffected. The scenario name rides on `AsyncLocalStorage` rather than a module global, because the four `test.concurrent()` blocks in `connector.test.js` interleave in one process and would otherwise clobber each other's context.
 
 ### Connector folders are dynamically discovered, not hardcoded
 `tests/stripe/meta.js` describes that connector's display name, icon, and scenario list (name/category/steps). `server.js`'s `discoverConnectors()` scans `tests/` for subfolders containing a `meta.js` at request time. **Verified this is genuinely dynamic**, not just organized-to-look-dynamic: temporarily created a fake `tests/mongo-test-proof/meta.js` mid-project, confirmed it appeared as a second folder card with zero code changes, then removed it.
@@ -47,7 +49,7 @@ These are documented in code comments (`tests/stripe/c-data-and-cache.js`) and t
    - Measured against `charges` (652 real rows), live, `isCached:false` verified first: `LIMIT 20`→20, `LIMIT 100`→100, `LIMIT 150`→**100**, `LIMIT 250`→**100**, `LIMIT 500`→**100**. Same through the builder request type, so not raw-SQL-specific. 100 = Stripe's default List API page size.
    - **One mechanism, three symptoms.** The scan stops at 100 and everything downstream inherits it: `COUNT(*)` counts a truncated scan; a `WHERE` clause filters only the first 100 rows (refunded charges 18 live vs 85 cached); row fetches cap at 100 regardless of `LIMIT`. The filtered-count case was originally written up as a separate filter bug — it isn't one.
    - Count evidence across all four tables in a single run, uncached then cached: `customers` 100→505, `charges` 100→652, `subscriptions` 100→222, `invoices` 100→338.
-   - **Not fully covered by tests.** Only the `COUNT(*)` form is asserted. Nothing guards the row-retrieval form, and `F`'s pagination step reads 40 rows so it never crosses the boundary.
+   - **Both forms are asserted now.** `C` checks `COUNT(*)` *and* row retrieval in one run: a live `SELECT id FROM charges LIMIT 500` returns exactly 100 on a 652-row table, and the same query cached returns >100 (measured 500), both duplicate-free. The live side is a passing regression test against the known cap; the cached side would catch the truncation spreading to cached reads.
    - The live steps assert against the **known cap value** (`EXPECTED_CUSTOMER_COUNT_NON_CACHE`, default `100`) — a passing regression test ("is the cap still exactly 100?"), not a check designed to fail forever. The cached steps separately assert each count is *not* the cap, so if the bug ever reaches cached reads that surfaces immediately.
    - **A bogus assertion fell out of this.** The old invoice check expected "~25% of customers" and passed only because the cap clamped both sides to ~100. Real data is 338 invoices to 505 customers (67%). Invoices come from subscriptions, not a flat customer percentage, so it now asserts at least one invoice per subscription (338 to 222).
 
@@ -87,7 +89,16 @@ tests/stripe/
   a-connection-setup.js      - A: create/reject Stripe connections (2 steps)
   b-catalog-schema.js        - B: catalog -> schema -> tables -> cache flags -> columns (8 steps)
   c-data-and-cache.js        - C: uncached checks -> cache all 4 tables -> same checks cached ->
-                               live-vs-cached comparison -> cache edge cases (18 steps)
+                               live-vs-cached comparison -> cache edge cases (20 steps)
+  g-connections.js           - G: connection CRUD + connector config + credential masking (8)
+  h-catalogs.js              - H: catalog CRUD + search + table statistics (6)
+  i-queries.js               - I: saved-query CRUD + execute by id/name + transpile (8)
+  j-internal-tables.js       - J: Peaka table + column CRUD (6)
+  k-exports.js               - K: async CSV export create/poll/read/list/cancel (6)
+  l-metadata.js              - L: metadata refresh + status, on its own catalog (5)
+  m-cache-management.js      - M: settings, batch, all-statuses x3, history, trigger/cancel (17)
+  n-materialized-queries.js  - N: materialized create/status/refresh/cancel/recover (8)
+                               G-N each have their own jest/stripe/<name>.test.js
   f-error-handling.js        - F: non-existent table, pagination (3 steps)
 
 jest/

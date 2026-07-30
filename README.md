@@ -16,7 +16,7 @@ PEAKA_PROJECT_ID=your_peaka_project_id
 STRIPE_TEST_TOKEN=sk_test_your_stripe_test_key
 PEAKA_CATALOG_ID=your_existing_peaka_catalog_id
 PEAKA_SCHEMA_NAME=payment
-NUM_CUSTOMERS=500
+NUM_CUSTOMERS=505   # your REAL customer count, not a guess
 EXPECTED_CUSTOMER_COUNT_NON_CACHE=100
 ```
 
@@ -43,14 +43,27 @@ npx jest --ci          # also writes test-results/junit.xml (see jest.config.js)
 Output looks like:
 
 ```
+PASS jest/stripe/j-internal-tables.test.js    ✓ J: Internal Table Endpoints (3646 ms)
+PASS jest/stripe/h-catalogs.test.js           ✓ H: Catalog Endpoints (3833 ms)
+PASS jest/stripe/g-connections.test.js        ✓ G: Connection Endpoints (5184 ms)
+PASS jest/stripe/k-exports.test.js            ✓ K: Export Endpoints (6879 ms)
+PASS jest/stripe/i-queries.test.js            ✓ I: Saved Query Endpoints (7172 ms)
+PASS jest/stripe/n-materialized-queries.test.js ✓ N: Materialized Query Endpoints (12382 ms)
+PASS jest/stripe/l-metadata.test.js           ✓ L: Metadata Refresh Endpoints (14221 ms)
+PASS jest/stripe/m-cache-management.test.js   ✓ M: Cache Management Endpoints (20619 ms)
 PASS jest/stripe/connector.test.js
-  ✓ A: Connection Setup (1929 ms)
-  ✓ B: Catalog & Schema Discovery (4040 ms)
-  ✓ C: Data Correctness & Cache Behavior (73059 ms)
-  ✓ F: Error Handling & Edge Cases (3670 ms)
+  ✓ A: Connection Setup (1621 ms)
+  ✓ B: Catalog & Schema Discovery (4546 ms)
+  ✓ C: Data Correctness & Cache Behavior (74248 ms)
+  ✓ F: Error Handling & Edge Cases (5788 ms)
+
+Test Suites: 11 passed, 11 total
+Tests:       29 passed, 29 total
 ```
 
-`C` dominates the runtime (~73s of the suite's ~85s): it runs every assertion twice with four cache syncs in between. The syncs are polled in parallel, so they cost the slowest (~50s) rather than the sum.
+**Two different parallelism models are in play here, deliberately.** `A`/`B`/`C`/`F` live in one file as `test.concurrent()` blocks — concurrent promises sharing a single worker. `G` through `N` each live in their *own* file, so Jest schedules them across separate worker **processes**. The per-file layout is what makes each of those independently runnable (`npx jest -t "M: Cache Management Endpoints"`) and keeps them isolated from one another.
+
+`C` still dominates wall time (~74s of ~85s): it runs every assertion twice with four cache syncs in between. Everything G–N runs alongside it, so they're nearly free in wall-clock terms.
 
 ## Web Dashboard (alternative to the CLI)
 
@@ -65,7 +78,7 @@ Then open **http://localhost:3000**. It's a single persistent screen — the lef
 
 Inside the Stripe folder, the layout (based on a design mockup) is a 3-pane API-client-style view:
 
-- **Left** — search + checkbox list of all 4 tests (name, step count, category)
+- **Left** — search + checkbox list of all 12 tests (name, step count, category)
 - **Center** — "Test Results": one row per *currently selected* test, showing live status; click a row to inspect it
 - **Right** — the selected test's status, duration, and (on failure) the real error message Jest reported
 
@@ -73,15 +86,23 @@ Inside the Stripe folder, the layout (based on a design mockup) is a 3-pane API-
 
 **Important: this isn't a separate/alternate way of running the tests — it's the same Jest suite, actually invoked through it.** `server.js` calls Jest's own programmatic API (`runCLI` — the same function the `jest` CLI command itself calls under the hood), with a custom reporter (`jest/browserReporter.js`) that streams each `onTestCaseResult` to the browser over Server-Sent Events instead of just printing to a terminal.
 
-**The right panel shows each scenario's steps as a static, informational list** (name only — not run individually, not tracked pass/fail per step, no request/response data), sourced from `tests/stripe/meta.js`. Below that, the real run outcome: pass/fail badge, duration, and (on failure) the actual failure message Jest reported, which already names which step failed (e.g. `"[list tables and check core tables present] Expected ..."`).
+**The right panel tracks each step live.** Step *names* come from `tests/stripe/meta.js` (so they're visible before a run happens), but each step's status and duration come from the real run: `helpers/step.js` emits `step-start` / `step-pass` / `step-fail` as it executes, and the heading counts completed steps (`Steps (5/8)`). The currently-running step pulses — which matters, since `C` can sit on a single cache-poll step for ~50s. Below that is the whole-scenario outcome: pass/fail badge, duration, and on failure the real Jest message, which already names the failing step.
 
-**Known simplification, deliberate for now:** there's no *live* per-step tracking (no individual "step 3 of 8 is currently running" indicator, no per-step request/response viewer) — only the whole-scenario pass/fail is tracked live. Building live per-step tracking would mean instrumenting `tests/stripe/*.js` to report each step's real status/duration/request/response as it happens, not just its name upfront. Deferred deliberately rather than faking placeholder data.
+A step listed in `meta.js` but never reported stays "pending" — so a stale `meta.js` is now visible rather than silent, which is useful given that file has drifted twice.
+
+**How the step events get out of Jest.** This is the non-obvious part. `jest/browserReporter.js` can use the shared `jest/reporterBus.js` because Jest loads *reporters* itself, in the host process, via plain `require` — so the reporter and `server.js` genuinely share one module instance. **Test files get no such thing.** Everything a test requires goes through jest-runtime's sandboxed module registry, so requiring `reporterBus` from inside a test returns a *different* EventEmitter that `server.js` never sees. Scenarios `G`–`N` also live in separate files, which Jest may run in separate worker *processes*, where sharing a module instance is impossible by construction.
+
+So step events travel over a localhost HTTP callback instead: `server.js` sets `PEAKA_STEP_REPORT_URL` before invoking Jest, `helpers/stepReporter.js` POSTs each event there, and the server re-emits it onto the same bus feeding the SSE stream. Under a plain `npm test` the variable is unset and every emit is a no-op, so the CLI is completely unaffected.
+
+The scenario name is attached via **`AsyncLocalStorage`**, not a module-level variable. That matters for `jest/stripe/connector.test.js`, where four `test.concurrent()` blocks interleave inside one process — a shared "current scenario" would let their steps overwrite each other. Verified by running `A` and `F` concurrently and confirming no step landed under the wrong scenario.
+
+⚠️ **Don't run the dashboard and `npm test` against the same project at once.** Both drive real Jest runs against the same Peaka project and the same tables, so they contend for caches and API quota. Doing this accidentally during development produced a 3× slowdown and four spurious failures that looked like a code regression.
 
 **Keep `meta.js`'s step lists in sync with the actual `step(...)` calls in each test file.** This already caught a real bug once: `meta.js` had gone stale after `"resolve catalog name"` was added as a step to `C` and `F` (see the `resolveCatalogName` fix earlier), so its old `stepCount` field silently under-reported both (5 instead of 6, 2 instead of 3) until the step lists were rebuilt directly from the source files.
 
 Also by design: no environment switcher (Staging/Production/Local) — this dashboard only ever talks to whatever's in your `.env`.
 
-One real UX limitation worth knowing: Jest's reporter API doesn't expose a "this test is now running" hook at the individual test level (only a per-*file* start hook, and we only have one file) — so all selected tests show a spinner together the moment you click Run (an accurate approximation, since `test.concurrent()` genuinely starts them together), transitioning to pass/fail as each `onTestCaseResult` arrives individually.
+One real UX limitation worth knowing: Jest's reporter API doesn't expose a "this test is now running" hook at the individual test level — only a per-*file* start hook. For `A`/`B`/`C`/`F`, which share one file, that means all four show a spinner together the moment you click Run (an accurate approximation, since `test.concurrent()` genuinely starts them together). `G`–`N` each have their own file, so the per-file hook gives them individual start signals. In practice this matters much less now that steps report themselves — the first `step-start` is a precise "this scenario is actually working" signal regardless of what the reporter API offers.
 
 **Credentials never reach the browser** — `server.js` reads `.env` itself; the browser only ever receives pass/fail results and error messages.
 
@@ -93,6 +114,14 @@ One real UX limitation worth knowing: Jest's reporter API doesn't expose a "this
 | **B: Catalog & Schema Discovery** | Reading the pre-existing catalog, discovering its schema, discovering core tables (`customers`, `charges`), verifying cache-capability flags, and checking expected columns on `customers`/`charges`/`subscriptions`/`invoices` |
 | **C: Data Correctness & Cache Behavior** | Every count/distribution assertion run **twice** — once uncached, once served from cache — with the full cache lifecycle in between (create on all four data tables → poll to completion → verify `isCached`), plus non-cacheable rejection and duplicate-creation handling |
 | **F: Error Handling & Edge Cases** | Querying a non-existent table, pagination correctness (no overlapping/missing rows across pages) |
+| **G: Connection Endpoints** | Connection create/list/get/update/delete, the connector-config catalogue, and a **credential-masking check** asserting the Stripe key is never echoed back |
+| **H: Catalog Endpoints** | Catalog create/list/delete against a throwaway catalog, project-wide search, and table statistics |
+| **I: Saved Query Endpoints** | Saved-query CRUD plus SQL transpilation. Needs no catalog — a saved query's SQL is just stored text |
+| **J: Internal Table Endpoints** | Peaka internal table and column create/list/delete |
+| **K: Export Endpoints** | Async CSV export: start → poll to `SUCCEEDED` → read → list → cancel |
+| **L: Metadata Refresh Endpoints** | Trigger a metadata refresh and poll it to a terminal state — against a catalog it creates itself |
+| **N: Materialized Query Endpoints** | Create a materialized query, poll its status, list project-wide statuses, refresh, cancel, confirm it recovers, and the `inputQueryRefId` variant |
+| **M: Cache Management Endpoints** | Cache settings read/update, batch creation, all three all-statuses variants, execution history, and the trigger/cancel pairs for incremental and full refresh |
 
 **`C` and `D` used to be separate tests and were merged.** They interacted badly: creating a cache on a table the other test was querying live made the live count return `0`, because Peaka's query routing prefers an existing cache even mid-sync. Keeping them apart required `D` to deliberately avoid `C`'s tables. Merging removes the race outright — steps inside one test are plain sequential `await`s — and makes the live-vs-cached difference the *subject* of the test rather than a hazard to route around. It also cut resource churn: one test creating four caches, instead of two tests creating two caches on unrelated tables.
 
@@ -213,7 +242,7 @@ Three genuine product-behavior findings from real testing against a live Peaka p
 
    **One assertion had to be replaced because of this.** The old invoice check expected "~25% of customers" and passed only because the cap clamped *both* sides to ~100. Against real data it's 338 invoices to 505 customers — 67%, nowhere near 25% — so it would have failed the moment it ran cached. Invoices are generated by subscriptions rather than by a flat percentage of customers, so it now asserts the relationship that actually holds: **at least one invoice per subscription** (338 to 222). Worth knowing that the original expectation was never validated against uncapped data.
 
-   ⚠️ **Coverage gap:** the suite currently asserts the cap only via `COUNT(*)`. Nothing yet guards the *row-retrieval* form — that a live `SELECT … LIMIT 500` still yields 100 rows. `F`'s pagination step reads 40 rows and never crosses the boundary. Given this is the most consequential behavior documented here, it deserves a direct assertion.
+   ✅ **Now asserted directly.** `C` checks both halves in one run: a live `SELECT id FROM charges LIMIT 500` returns exactly 100 rows on a 652-row table, and the same query once cached returns >100 (measured: 500) — both duplicate-free. The live assertion is a deliberate passing regression test against the known cap; the cached one would catch the truncation spreading to cached reads.
 
 3. **Some Stripe connector tables produce cache jobs that hang forever, with no error and no way to detect it.** This is why the old `D: Cache Behavior` test was failing on every run.
 
@@ -245,6 +274,23 @@ Three genuine product-behavior findings from real testing against a live Peaka p
    **What the test does now**: `C` (the merged test) caches exactly the four data tables it asserts on — `customers`, `charges`, `subscriptions`, `invoices` — all four verified to sync cleanly in ~37-50s. The arbitrary table-selection logic that caused this is gone entirely. The hang itself is deliberately **not** asserted anywhere — it's documented here rather than left as a permanently red test.
 
    Also found while investigating: the documented schema-level cache-status endpoint (`GET /data/projects/{projectId}/catalog/{catalogId}/schema/{schemaName}/cache/status`) returns **`500 Internal Server Error`** rather than a list of statuses.
+
+### Smaller API quirks found while covering the base endpoints
+
+None of these are severe on their own, but each one silently breaks naive client code, and several
+contradict the published reference:
+
+| Behaviour | Detail |
+|---|---|
+| **Two spellings of "cancelled"** | Cache statuses use `CANCELLED` (two L's); materialized query statuses use `CANCELED` (one L). A polling loop handling only one spelling waits forever on the other — this bit the materialized-query test during development and looked exactly like a hang |
+| **Deleted resources return `400`, not `404`** | Both `getQuery` and `getConnection` on a deleted id return `400` with an explanatory message. The instructor's STRIPE-02 scenario expects `404` |
+| **`COMPLETED` doesn't mean "materialized"** | A freshly created materialized query reports `status: COMPLETED` with `lastExecutionStartTime` and `lastUpdateTime` both `null`. It means "nothing in flight", not "the data exists" |
+| **Stale status after triggering a refresh** | The status endpoint keeps returning the *previous* terminal status until the new run actually starts, so polling for "any terminal status" right after a refresh returns the old value instantly |
+| **Malformed cache schedules are silently ignored** | `PUT /cache/{id}` with an invalid ISO-8601 expression returns `200` and keeps the old schedule, instead of the documented `400` |
+| **Table statistics unsupported for Stripe** | `400 "Catalog type: stripe is not being supported yet"` |
+| **`transpileSql` returns `{query}`** | The reference documents `{result}` |
+| **Metadata refresh status is lower-kebab** | Returns `not-active`; the reference documents `NOT_ACTIVE` |
+| **Executing a saved query keys off `id`** | Not `queryId`. `queryId`, `queryRefId` and `savedQueryId` all return `400`, as does passing the id as a JSON number |
 
 ## Pairwise test generation with the real Microsoft PICT
 

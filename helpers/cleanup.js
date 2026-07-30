@@ -1,12 +1,16 @@
 /**
  * Deletes everything a test run created, in dependency order:
- * cache -> catalog -> connection (a catalog can't be deleted while a cache
- * depends on it; a connection can't be deleted while a catalog depends on it).
+ * cache -> query -> internal table -> catalog -> connection. A catalog can't
+ * be deleted while a cache depends on it, and a connection can't be deleted
+ * while a catalog depends on it.
  *
- * Best-effort: deleteCache/deleteCatalog/deleteConnection paths are inferred
- * from REST convention (see peakaClient.js header) and not yet confirmed
- * against Peaka's docs, so failures here are reported per-item rather than
- * thrown - a cleanup failure shouldn't mask real test results.
+ * Best-effort by design: every deletion is reported per-item rather than
+ * thrown, so a cleanup failure never masks a real test result.
+ *
+ * IMPORTANT: this only ever deletes ids the run itself recorded. It must
+ * never touch PEAKA_CATALOG_ID or the connection behind it - that's the
+ * user's real, hand-provisioned catalog, and the project also contains
+ * unrelated pre-existing connections/queries/tables.
  *
  * @param {object} ctx - the shared run context (client, createdCacheIds, etc.)
  * @param {(line: string) => void} [log] - called with each human-readable
@@ -16,6 +20,25 @@
  */
 async function cleanup(ctx, log = console.log) {
   const outcomes = [];
+
+  /** Shared per-item deletion with uniform logging and error capture. */
+  async function deleteEach(ids, type, deleteFn) {
+    for (const id of [...(ids || [])].reverse()) {
+      try {
+        const res = await deleteFn(id);
+        if (res.ok) {
+          log(`✓ Deleted ${type} ${id}`);
+          outcomes.push({ type, id, ok: true });
+        } else {
+          log(`⚠ Could not delete ${type} ${id} (status ${res.status}) - may need manual cleanup`);
+          outcomes.push({ type, id, ok: false, status: res.status });
+        }
+      } catch (err) {
+        log(`⚠ Error deleting ${type} ${id}: ${err.message}`);
+        outcomes.push({ type, id, ok: false, error: err.message });
+      }
+    }
+  }
 
   for (const cacheId of [...ctx.createdCacheIds].reverse()) {
     try {
@@ -32,6 +55,9 @@ async function cleanup(ctx, log = console.log) {
       outcomes.push({ type: "cache", id: cacheId, ok: false, error: err.message });
     }
   }
+
+  await deleteEach(ctx.createdQueryIds, "query", (id) => ctx.client.deleteQuery(id));
+  await deleteEach(ctx.createdInternalTableNames, "internal table", (n) => ctx.client.deleteInternalTable(n));
 
   for (const catalogId of [...ctx.createdCatalogIds].reverse()) {
     try {

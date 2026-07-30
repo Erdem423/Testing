@@ -86,6 +86,18 @@ async function measureCounts(ctx) {
   };
 }
 
+/**
+ * Fetches up to `limit` ids from a table. Used to test the row-retrieval form
+ * of the 100-row cap, which is distinct from the COUNT(*) form: the cap is on
+ * the underlying scan, so it truncates ordinary data fetches too.
+ */
+async function fetchIds(ctx, tableName, limit) {
+  const sql = `SELECT id FROM ${qname(ctx, tableName)} LIMIT ${limit}`;
+  const res = await ctx.client.executeQuery({ statement: sql }, "SIMPLE");
+  assertStatus(res, 200, `SELECT id FROM ${tableName} LIMIT ${limit}`);
+  return res.body.data.map((r) => r.id);
+}
+
 /** Field-level spot check; returns the row so both passes can be compared. */
 async function fetchSpotCheckCustomer(ctx) {
   const sql = `SELECT name, email FROM ${qname(ctx, "customers")} WHERE name = 'Test Customer 1' LIMIT 1`;
@@ -147,6 +159,37 @@ async function runDataAndCache(ctx) {
     for (const tableName of DC_TABLES) {
       assertApprox(live[tableName], ctx.expectedCustomerCountNonCache, 0.1, `live ${tableName} count (expected the cap)`);
     }
+  });
+
+  // THE ROW-RETRIEVAL FORM OF THE CAP, and the most consequential assertion
+  // in this file. The COUNT(*) steps above catch the aggregate symptom; this
+  // catches the one that actually corrupts data for a caller: an ordinary
+  // SELECT silently returns a PARTIAL result set with no error and no flag.
+  //
+  // Measured on `charges` (652 real rows, uncached): LIMIT 150, 250 and 500
+  // all return exactly 100, through both the statement and builder request
+  // types. Anything built on a live query is reading truncated data and
+  // cannot tell.
+  //
+  // Like the count checks, this asserts the KNOWN CAP so it passes today and
+  // goes red if Peaka fixes the pagination bug - that's the intended signal.
+  await step("a live SELECT cannot return more than 100 rows", async () => {
+    if (skipLivePhase) {
+      console.log("skipped: tables were already cached (see earlier step)");
+      return;
+    }
+    const cap = ctx.expectedCustomerCountNonCache;
+    const ids = await fetchIds(ctx, "charges", 500);
+    assert(
+      ids.length === cap,
+      `Expected a live SELECT with LIMIT 500 to still return exactly ${cap} rows (the known cap), got ${ids.length}. ` +
+        `If this is now returning the full table, Peaka has fixed the pagination bug - update this step and the ` +
+        `README's "Known gaps" rather than loosening the assertion.`
+    );
+    assert(
+      new Set(ids).size === ids.length,
+      `Expected no duplicate ids within a single page, got ${ids.length - new Set(ids).size} duplicates`
+    );
   });
 
   await step("live charge refund distribution is plausible", async () => {
@@ -242,6 +285,30 @@ async function runDataAndCache(ctx) {
       );
       assert(cached[tableName] > 0, `Expected a non-zero cached count for ${tableName}`);
     }
+  });
+
+  // The mirror of the live row-cap check. Caching must lift the cap for
+  // ordinary row retrieval, not just for COUNT(*) - otherwise the truncation
+  // would be reaching cached reads too, which would make it far broader than
+  // a live pass-through pagination bug.
+  //
+  // This is also the only place the suite exercises the spec's "pagination
+  // beyond Stripe's page size" case, since it's the only context where a
+  // >100-row result is actually obtainable.
+  await step("a cached SELECT returns more than 100 rows", async () => {
+    const cap = ctx.expectedCustomerCountNonCache;
+    const ids = await fetchIds(ctx, "charges", 500);
+    assert(
+      ids.length > cap,
+      `Expected a cached SELECT with LIMIT 500 to exceed the ${cap}-row live cap, got ${ids.length}. ` +
+        `If this equals the cap, the truncation affects cached reads too - a materially bigger bug. ` +
+        `Don't loosen this.`
+    );
+    assert(
+      new Set(ids).size === ids.length,
+      `Expected no duplicate ids across a >100-row cached page, got ${ids.length - new Set(ids).size} duplicates`
+    );
+    console.log(`cached SELECT ... LIMIT 500 returned ${ids.length} rows (live returns exactly ${cap})`);
   });
 
   await step("cached customer count matches the real seeded count", async () => {
