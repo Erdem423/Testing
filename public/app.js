@@ -327,9 +327,39 @@
     nameEl.textContent = sc.name;
     const subEl = document.createElement("span");
     subEl.className = "result-sub";
-    subEl.textContent = `${sc.steps.length} steps · ${sc.category}`;
+
+    // Live step progress, shown on EVERY row rather than only the selected
+    // one. The right panel can only ever detail a single scenario, but a run
+    // covers up to 12 concurrently - without this you'd be blind to progress
+    // on all but whichever row you happened to click.
+    const liveSteps = (state.steps && state.steps[sc.name]) || {};
+    const done = Object.values(liveSteps).filter((s) => s.status === "pass" || s.status === "fail").length;
+    const running = Object.entries(liveSteps).find(([, s]) => s.status === "running");
+    if (running) {
+      // Name the step actually in flight - this is what turns a 90s wait from
+      // "is it stuck?" into "it's polling a cache".
+      subEl.textContent = `${done}/${sc.steps.length} · ${running[0]}`;
+      subEl.classList.add("result-sub-running");
+    } else if (done > 0) {
+      subEl.textContent = `${done}/${sc.steps.length} steps · ${sc.category}`;
+    } else {
+      subEl.textContent = `${sc.steps.length} steps · ${sc.category}`;
+    }
+
     info.appendChild(nameEl);
     info.appendChild(subEl);
+
+    // A thin progress bar, only once something has actually reported.
+    if (done > 0 || running) {
+      const failed = Object.values(liveSteps).some((s) => s.status === "fail");
+      const track = document.createElement("div");
+      track.className = "step-progress-track";
+      const fill = document.createElement("div");
+      fill.className = "step-progress-fill" + (failed ? " failed" : "");
+      fill.style.width = `${Math.round((done / Math.max(sc.steps.length, 1)) * 100)}%`;
+      track.appendChild(fill);
+      info.appendChild(track);
+    }
     row.appendChild(info);
 
     if (r && (r.status === "pass" || r.status === "fail") && typeof r.duration === "number") {
@@ -523,6 +553,13 @@
       state.results[name] = { status: "running" };
       state.steps[name] = {}; // drop any step state from a previous run
     }
+    // Auto-select the first scenario in the run if nothing is selected.
+    // Without this the right panel sits on its empty state for the whole run
+    // unless the user happens to click a row, which made the per-step detail
+    // easy to miss entirely.
+    if (!state.activeResultName || !targetNames.includes(state.activeResultName)) {
+      state.activeResultName = targetNames[0];
+    }
     renderFolderScenarioList(state.folder.id);
     renderCenterList();
     if (state.activeResultName) renderRightPanel();
@@ -548,6 +585,10 @@
             duration: event.duration,
             message: event.message,
           };
+          // Refresh the centre list on every step event so per-row progress
+          // updates for ALL scenarios, not just the selected one. The right
+          // panel still only details the active scenario.
+          renderCenterList();
           if (state.activeResultName === event.scenario) renderRightPanel();
         }
         return;
