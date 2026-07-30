@@ -17,7 +17,7 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { runTier2Races } = require("../../tests/stripe/races-tier2");
+const { runTier2Races } = require("../../tests/races/tier2");
 
 let ctx = null;
 

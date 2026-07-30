@@ -126,8 +126,13 @@ the main suite creates *unintended* ones and produces failures that look like co
 hypothetical — a stray `server.js` running a second suite against the same project produced a 3× slowdown
 and four spurious failures during development.
 
-Same mechanics as the other deferred specs: `testPathIgnorePatterns` in the main config, a second config,
-and an `npm run test:races` script.
+Same mechanics as the other deferred specs: `testPathIgnorePatterns` in the main config, a second config
+(`jest.races.config.js`, `maxWorkers: 1`), and an `npm run test:races` script.
+
+**Also available in the dashboard** as its own ⚡ Concurrency Races folder — `tests/races/meta.js` was the
+only file needed, since `server.js` discovers folders dynamically. Live per-step reporting makes a 4-minute
+run watchable, which is exactly the case it was built for. The `runInProgress` guard prevents overlapping
+dashboard runs, but don't start `npm test` in a terminal while the races run in the browser.
 
 ## Teardown
 

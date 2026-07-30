@@ -74,11 +74,15 @@ npm install    # installs express, only needed for the dashboard
 npm run web
 ```
 
-Then open **http://localhost:3000**. It's a single persistent screen — the left sidebar shows a **folder tree** (like a file explorer), one collapsible section per connector, discovered dynamically by `server.js` scanning `tests/` for subfolders containing a `meta.js` (not hardcoded — verified by temporarily adding a second fake folder during development and watching it appear as a second tree section with zero code changes, then removing it again). Currently there's one section: **Stripe**. Click a section's header to expand/collapse it; each section has its own search box, "select all," and checkbox list, independent of any other folder's.
+Then open **http://localhost:3000**. It's a single persistent screen — the left sidebar shows a **folder tree** (like a file explorer), one collapsible section per folder, discovered dynamically by `server.js` scanning `tests/` for subfolders containing a `meta.js`.
+
+There are two sections: **💳 Stripe** (12 scenarios) and **⚡ Concurrency Races** (3). The races folder is the first real proof the dynamic discovery works as designed rather than merely looking like it does — adding `tests/races/meta.js` was the *only* change needed for it to appear, with no edits to `server.js` or the frontend.
+
+⚠️ **Never run the two folders at once.** The races deliberately manufacture conflicts and several cache `customers`, the same table Stripe's `C` caches. `server.js`'s `runInProgress` guard already blocks two overlapping dashboard runs, and `jest.config.js` excludes `jest/races/` so `npm test` can't pick them up — but starting `npm test` in a terminal while the races run in the browser would still collide. Click a section's header to expand/collapse it; each section has its own search box, "select all," and checkbox list, independent of any other folder's.
 
 Inside the Stripe folder, the layout (based on a design mockup) is a 3-pane API-client-style view:
 
-- **Left** — search + checkbox list of all 12 tests (name, step count, category)
+- **Left** — search + checkbox list of that folder's scenarios (name, step count, category)
 - **Center** — "Test Results": one row per *currently selected* test, showing live status; click a row to inspect it
 - **Right** — the selected test's status, duration, and (on failure) the real error message Jest reported
 
@@ -96,7 +100,15 @@ So step events travel over a localhost HTTP callback instead: `server.js` sets `
 
 The scenario name is attached via **`AsyncLocalStorage`**, not a module-level variable. That matters for `jest/stripe/connector.test.js`, where four `test.concurrent()` blocks interleave inside one process — a shared "current scenario" would let their steps overwrite each other. Verified by running `A` and `F` concurrently and confirming no step landed under the wrong scenario.
 
-⚠️ **Don't run the dashboard and `npm test` against the same project at once.** Both drive real Jest runs against the same Peaka project and the same tables, so they contend for caches and API quota. Doing this accidentally during development produced a 3× slowdown and four spurious failures that looked like a code regression.
+⚠️ **Never run two suites against the same project at once.** Everything here drives real Jest runs against one Peaka project and the same tables, so overlapping runs contend for caches and API quota.
+
+This has now bitten twice during development, both times looking exactly like a code regression:
+- A stray `server.js` left running alongside `npm test` → 3× slowdown, four spurious failures.
+- A dashboard race run, then `npm run test:races`, with a stray server still alive → **all three race tiers failed** and their times roughly doubled (Tier 1 407s vs 250s). Re-run in a quiet environment: all three green, unchanged code.
+
+Two lessons worth keeping. **Times roughly doubling across files you didn't touch is the signature** — that pattern points at contention, not at your change. And on Windows, `pkill -f "node server.js"` from Git Bash does **not** reliably kill the process; check with PowerShell (`Get-CimInstance Win32_Process`) and confirm port 3000 is actually free.
+
+Also note `npm run test:races | grep … && npm test` is a trap: `&&` sees *grep's* exit code, not Jest's, so the second suite runs even when the first failed — and then overlaps with whatever you start next.
 
 **Keep `meta.js`'s step lists in sync with the actual `step(...)` calls in each test file.** This already caught a real bug once: `meta.js` had gone stale after `"resolve catalog name"` was added as a step to `C` and `F` (see the `resolveCatalogName` fix earlier), so its old `stepCount` field silently under-reported both (5 instead of 6, 2 instead of 3) until the step lists were rebuilt directly from the source files.
 
