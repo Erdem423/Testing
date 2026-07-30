@@ -9,9 +9,9 @@ async function sleep(ms) {
  * failure), or gives up after maxAttempts. Throws on failure/timeout;
  * resolves (returns nothing meaningful) on success.
  *
- * Extracted from tests/stripe/d-cache-behavior.js so any test needing to
- * wait for a cache to finish syncing (D's own check, or C's cache-vs-live
- * count comparison) uses the exact same status-parsing logic - in
+ * Shared so anything needing to wait for a cache to finish syncing uses the
+ * exact same status-parsing logic - C polls four caches through it at once
+ * (see tests/stripe/c-data-and-cache.js) - in
  * particular, the "terminal status matched exactly against the relevant
  * field, not a substring search of the whole response" fix, since the raw
  * response always contains a literal "error": null field even while happily

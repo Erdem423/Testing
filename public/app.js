@@ -42,6 +42,7 @@
   //   scenarios: [{ name, category, steps: string[] }],
   //   selected: Set<name>,
   //   results: { [name]: { status, duration, failureMessages } },
+//   steps: { [scenarioName]: { [stepName]: { status, duration } } },
   //   search: string,
   //   activeResultName: string | null,
   //   hasRun: boolean,
@@ -93,6 +94,9 @@
       scenarios: scenariosData.scenarios,
       selected: new Set(),
       results: {},
+      // steps[scenarioName][stepName] = { status, duration }
+      // Populated live from step-start/step-pass/step-fail SSE events.
+      steps: {},
       search: "",
       activeResultName: null,
       hasRun: false,
@@ -446,23 +450,51 @@
   }
 
   /**
-   * Appends a static "Steps" list to the right panel's detail body - purely
-   * informational (what does this scenario check), sourced from meta.js.
-   * Not individually run, not tracked pass/fail per step - see the
-   * conversation/README for why per-step live tracking was deliberately
-   * deferred rather than faked.
+   * Appends the "Steps" list to the right panel.
+   *
+   * The step NAMES come from meta.js (so they're visible before a run ever
+   * happens), but each step's live status comes from the real run: helpers/
+   * step.js POSTs start/pass/fail events to the server, which re-emits them
+   * onto the same SSE stream as the test results. Steps are matched by name.
+   *
+   * A name present in meta.js but never reported just stays "pending", which
+   * is also how a stale meta.js shows up visually - worth knowing, since that
+   * file has drifted before.
    */
   function appendStepsSection(sc) {
+    const state = currentState();
+    const liveSteps = (state && state.steps && state.steps[sc.name]) || {};
+    const doneCount = Object.values(liveSteps).filter((s) => s.status === "pass" || s.status === "fail").length;
+
     const heading = document.createElement("span");
     heading.className = "detail-section-heading";
-    heading.textContent = `Steps (${sc.steps.length})`;
+    heading.textContent = doneCount > 0 ? `Steps (${doneCount}/${sc.steps.length})` : `Steps (${sc.steps.length})`;
     detailBodyEl.appendChild(heading);
 
     const list = document.createElement("ol");
     list.className = "steps-list";
     for (const stepName of sc.steps) {
       const li = document.createElement("li");
-      li.textContent = stepName;
+      const live = liveSteps[stepName];
+      const status = live ? live.status : "pending";
+      li.className = `step-item step-${status}`;
+
+      const icon = document.createElement("span");
+      icon.className = `step-icon step-icon-${status}`;
+      icon.textContent = status === "pass" ? "✓" : status === "fail" ? "✕" : status === "running" ? "◍" : "○";
+      li.appendChild(icon);
+
+      const label = document.createElement("span");
+      label.className = "step-label";
+      label.textContent = stepName;
+      li.appendChild(label);
+
+      if (live && typeof live.duration === "number") {
+        const dur = document.createElement("span");
+        dur.className = "step-duration";
+        dur.textContent = `${live.duration}ms`;
+        li.appendChild(dur);
+      }
       list.appendChild(li);
     }
     detailBodyEl.appendChild(list);
@@ -489,6 +521,7 @@
     const targetNames = namesFilter || state.scenarios.map((sc) => sc.name);
     for (const name of targetNames) {
       state.results[name] = { status: "running" };
+      state.steps[name] = {}; // drop any step state from a previous run
     }
     renderFolderScenarioList(state.folder.id);
     renderCenterList();
@@ -503,6 +536,22 @@
 
     source.onmessage = (evt) => {
       const event = JSON.parse(evt.data);
+
+      if (event.type === "step-start" || event.type === "step-pass" || event.type === "step-fail") {
+        // Live per-step updates. `scenario` is attached by helpers/
+        // stepReporter.js via AsyncLocalStorage, which is what keeps the four
+        // concurrent tests in connector.test.js from mixing up their steps.
+        if (event.scenario) {
+          if (!state.steps[event.scenario]) state.steps[event.scenario] = {};
+          state.steps[event.scenario][event.name] = {
+            status: event.type === "step-start" ? "running" : event.type === "step-pass" ? "pass" : "fail",
+            duration: event.duration,
+            message: event.message,
+          };
+          if (state.activeResultName === event.scenario) renderRightPanel();
+        }
+        return;
+      }
 
       if (event.type === "result") {
         state.results[event.name] = {
@@ -559,6 +608,7 @@
     const state = currentState();
     if (!state) return;
     state.results = {};
+    state.steps = {};
     state.hasRun = false;
     state.activeResultName = null;
     renderFolderScenarioList(state.folder.id);

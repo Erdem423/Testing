@@ -533,6 +533,49 @@ body {
   color: var(--text-dim);
 }
 
+/* ---------- Live per-step status ----------
+   Status arrives from real step-start/step-pass/step-fail events emitted by
+   helpers/step.js during the run - see helpers/stepReporter.js. A step whose
+   name is listed in meta.js but never reported simply stays "pending", which
+   is also how a stale meta.js becomes visible. */
+.step-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.step-icon {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  flex: 0 0 auto;
+  width: 12px;
+  text-align: center;
+}
+.step-icon-pending { color: var(--text-dim); }
+.step-icon-running { color: var(--pending-fg); }
+.step-icon-pass    { color: var(--pass-fg); }
+.step-icon-fail    { color: var(--fail-fg); }
+
+.step-label { flex: 1 1 auto; }
+
+.step-pending .step-label { color: var(--text-muted); }
+.step-running .step-label { color: var(--text-strong); font-weight: 500; }
+.step-fail .step-label    { color: var(--fail-fg); }
+
+.step-duration {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+
+/* The running step pulses so it's obvious which one is in flight during a
+   long scenario - C alone can sit on a single cache-poll step for ~50s. */
+.step-running .step-icon { animation: step-pulse 1.1s ease-in-out infinite; }
+@keyframes step-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
 /* ---------- Responsive ---------- */
 
 @media (max-width: 900px) {
