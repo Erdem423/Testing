@@ -4,8 +4,6 @@
   "description": "Jest test suite validating Peaka's Stripe connector against the Peaka Partner API",
   "scripts": {
     "test": "jest",
-    "test:unit": "jest --testPathPatterns=jest/unit",
-    "test:integration": "jest --testPathPatterns=jest/stripe",
     "test:watch": "jest --watch",
     "web": "node server.js"
   },

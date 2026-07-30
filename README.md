@@ -294,7 +294,7 @@ contradict the published reference:
 
 ## Pairwise test generation with the real Microsoft PICT
 
-`helpers/pictWrapper.js` shells out to the **actual Microsoft PICT binary** (not a reimplementation) to generate combinatorial test coverage - e.g. combinations of `Table` × `CacheSchedule` × `QueryFormat` × `QueryMechanism` that would be impractical to test exhaustively (162 full combinations → ~21 pairwise-covering rows, independently verified to still cover every pair - see `jest/unit/pictWrapper.test.js`).
+`helpers/pictWrapper.js` shells out to the **actual Microsoft PICT binary** (not a reimplementation) to generate combinatorial test coverage - e.g. combinations of `Table` × `CacheSchedule` × `QueryFormat` × `QueryMechanism` that would be impractical to test exhaustively (162 full combinations → ~21 pairwise-covering rows, independently verified to still cover every pair).
 
 **The binaries in `tools/pict/` are real, unmodified Microsoft artifacts**:
 - `pict.exe` - the official Windows release (v3.7.4), downloaded directly from `github.com/microsoft/pict/releases`
@@ -302,9 +302,9 @@ contradict the published reference:
 
 `helpers/pictWrapper.js` auto-detects the platform (`process.platform`) and calls whichever binary is correct - no code changes needed switching between your local Windows machine and CI.
 
-There's also a from-scratch JS reimplementation of the same algorithm in `helpers/pairwiseGenerate.js` (with its own unit tests in `jest/unit/pairwiseGenerate.test.js`) - built and benchmarked against the real tool before the real-binary integration existed. Both are kept: the real binary is the actual, authoritative Microsoft tool; the homemade version has zero external dependencies and needs no platform-specific binary at all. Either can be used as the generator - they produce comparably-sized, fully pair-covering output (18 vs. 21 rows on our real project's dimensions, both independently verified to cover all 81 required pairs).
+There's also a from-scratch JS reimplementation of the same algorithm in `helpers/pairwiseGenerate.js` - built and benchmarked against the real tool before the real-binary integration existed. Both are kept: the real binary is the actual, authoritative Microsoft tool; the homemade version has zero external dependencies and needs no platform-specific binary at all. Either can be used as the generator - they produce comparably-sized, fully pair-covering output (18 vs. 21 rows on our real project's dimensions, both independently verified to cover all 81 required pairs).
 
-**What's not yet done**: the generator itself works and is fully tested, but nothing in `tests/stripe/*.js` yet *uses* the generated combinations to drive real `createCache`/`executeQuery` calls against Peaka - that's the natural next step, not yet built.
+**What's not yet done**: the generator itself works, but nothing in `tests/stripe/*.js` yet *uses* the generated combinations to drive real `createCache`/`executeQuery` calls against Peaka - that's the natural next step, not yet built. Note: dedicated unit tests for these generators were removed (see below) - if they get wired into a real scenario, correctness will be covered by that scenario's own assertions instead.
 
 
 
