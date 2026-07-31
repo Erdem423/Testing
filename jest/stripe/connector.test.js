@@ -1,11 +1,16 @@
 /**
  * Peaka x Stripe Connector Test Suite
  * -------------------------------------
- * Four consolidated tests, one per category:
- *   A - Connection Setup
+ * Three consolidated tests, one per category:
  *   B - Catalog & Schema Discovery
  *   C - Data Correctness & Cache Behavior
  *   F - Error Handling & Edge Cases
+ *
+ * A - Connection Setup used to live here too. It was merged into
+ * `G: Connection Endpoints` (tests/stripe/g-connections.js) on 2026-07-31:
+ * both scenarios covered connections, and A's "create a valid connection" step
+ * asserted a strict subset of what G's first step already asserts. Only A's
+ * invalid-token check was unique, so it moved to G and A was deleted.
  *
  * C was previously two tests (C: Data Correctness and D: Cache Behavior).
  * They were merged because they interacted: caching a table while the other
@@ -48,7 +53,6 @@ const { loadDotEnv, checkCredentials } = require("../../helpers/env");
 const { PeakaClient } = require("../../helpers/peakaClient");
 const { cleanup } = require("../../helpers/cleanup");
 const { withScenario } = require("../../helpers/stepReporter");
-const { runConnectionSetup } = require("../../tests/stripe/a-connection-setup");
 const { runCatalogSchemaDiscovery } = require("../../tests/stripe/b-catalog-schema");
 const { runDataAndCache } = require("../../tests/stripe/c-data-and-cache");
 const { runErrorHandling } = require("../../tests/stripe/f-error-handling");
@@ -90,7 +94,6 @@ function buildFreshCtx() {
 // One ctx per category, populated by that category's own test. Kept
 // module-scoped (not shared between tests) purely so afterAll can clean up
 // whatever each one created.
-let ctxA = null;
 let ctxB = null;
 let ctxC = null;
 let ctxF = null;
@@ -100,12 +103,6 @@ function requireCredentials() {
     throw new Error(`Credentials not configured:\n${check.errors.join("\n")}`);
   }
 }
-
-test.concurrent("A: Connection Setup", async () => {
-  requireCredentials();
-  ctxA = buildFreshCtx();
-  await withScenario("A: Connection Setup", () => runConnectionSetup(ctxA));
-});
 
 test.concurrent("B: Catalog & Schema Discovery", async () => {
   requireCredentials();
@@ -134,7 +131,7 @@ test.concurrent("F: Error Handling & Edge Cases", async () => {
 });
 
 afterAll(async () => {
-  const allCtxs = [ctxA, ctxB, ctxC, ctxF].filter(Boolean);
+  const allCtxs = [ctxB, ctxC, ctxF].filter(Boolean);
   if (allCtxs.length === 0) return;
 
   if (process.env.SKIP_CLEANUP === "true") {

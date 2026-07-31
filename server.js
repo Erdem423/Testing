@@ -150,7 +150,7 @@ app.get("/api/run-stream", async (req, res) => {
     return;
   }
 
-  // Optional ?names=A: Connection Setup,C: Data Correctness (comma-separated,
+  // Optional ?names=G: Connection Endpoints,C: Data Correctness (comma-separated,
   // URL-encoded) - restricts Jest to just these tests via testNamePattern,
   // for the dashboard's "Run Selected" button. Omitted/empty = run everything
   // in this folder ("Run All").

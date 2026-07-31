@@ -1,7 +1,7 @@
 # Spec — deliberate concurrency conflicts on shared resources
 
 **All three tiers are implemented** — `tests/stripe/races-tier{1,2,3}.js`, run with `npm run test:races`
-(~268s, three sequential scenarios). One step remains gated and unrun: Tier 2 #4. Companion to `STATE-MACHINE-SPEC.md`, which covers *sequential* state
+(~268s, three sequential scenarios). One step remains gated and unrun: Tier 2 #4. Supersedes the earlier `STATE-MACHINE-SPEC.md` proposal, which covered *sequential* state
 transitions and states outright that it cannot express overlapping ones. This covers exactly that gap.
 
 ## Why this one has a track record
@@ -97,8 +97,9 @@ Proposed helper: `helpers/raceWindow.js` exporting `duringSync(ctx, cacheId, con
 | `refunds` | 85 | 8.2s | Marginal |
 | `customers` | 505 | ~37s | **Good window** |
 
-That's the opposite of `STATE-MACHINE-SPEC.md`, which wants the fastest possible sync. Worth noting
-explicitly so nobody "optimises" this onto `transfers` and quietly destroys the overlap.
+That's the opposite of what `tests/stripe/m-cache-management.js` wants, which picks `transfers` for the
+fastest possible sync. Worth noting explicitly so nobody "optimises" this onto `transfers` and quietly
+destroys the overlap.
 
 ## Non-determinism
 
@@ -107,8 +108,19 @@ trains people to ignore red.
 
 So each scenario reports what actually occurred (who won, what each call returned) and asserts only the
 invariants. If the conflicting call lands after the sync finished, that's logged as "window missed" and the
-invariants still apply. This is the same shape `N`'s cancel step already uses after it passed once and hung
-once on identical code.
+invariants still apply.
+
+**"Window missed" is a result, not an excuse.** It is a legitimate outcome when the operation genuinely
+finished first — but if a step reports it *every* time, the harness is broken, not lucky, and the step is
+silently testing the idle path that the main suite already covers. Both new cancel steps hit exactly that:
+the materialized-query one reported `status at fire: COMPLETED` on every run, because the status endpoint
+serves the **previous** terminal status until the new run starts, so the poll gave up before the refresh
+had begun. Watch the logged `entered window` values rather than the pass/fail — a green step that never
+raced proves nothing.
+
+Since 2026-07-31 the deliberate cancel races live here (Tier 1.4–1.6), moved out of `M` and `N`. Those two
+used to trigger-and-cancel in the main suite, which made their outcomes depend on who won; they now settle
+first and assert the idle contract exactly. Races belong in the race file.
 
 ## Harness self-test
 
@@ -205,6 +217,27 @@ narrows the suspicion to the create path specifically rather than cache concurre
 
 The canary earns its place. It fired at 361ms and confirmed count `0`, which is what makes the two clean
 results trustworthy — without it, "no bug found" and "never entered the window" look identical.
+
+### Cancel races added 2026-07-31 (moved out of `M` and `N`)
+
+Runtime rose to ~382s — each step triggers an operation and waits for it to settle twice over.
+
+| Step | Outcome |
+|---|---|
+| **1.4** cancel a **running incremental** | Entered the window at `RUNNING`, cancel `200`, cache settled at **`CANCELLED`**, still deletable |
+| **1.5** cancel a **running full refresh** | Entered at `RUNNING` (record absent before the trigger, as expected), cancel `200`, settled at **`CANCELLED`** |
+| **1.6** cancel a **running materialized refresh** | Entered at `RUNNING`, cancel `200`, settled at **`CANCELED`** (one L), and a recovery refresh produced a genuinely new execution |
+
+All three clean: cancelling something in flight is accepted, actually cancels, and never wedges the
+resource. Combined with the idle case the main suite now pins (`404` for both cache endpoints), the cancel
+contract is fully characterised for the first time — and the two halves are tested where they belong.
+
+**1.6 failed to race on its first run** and reported `status at fire: COMPLETED` every time, silently
+duplicating the idle case. The status endpoint serves the *previous* terminal status until the new run
+starts, so `duringState`'s default give-up-on-terminal fired before the refresh began. It now ignores every
+status until `lastExecutionStartTime` moves. The visible difference between the broken and fixed versions is
+`entered window: false` → `true` and a settle at `COMPLETED` → `CANCELED` — both of which were in the logs
+of a step that *passed*. Read the window telemetry, not the pass/fail.
 
 ## Tier 2 results (implemented 2026-07-30)
 

@@ -32,10 +32,53 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  *   - schedule is optional too; omitting it behaves like { type: "none" }.
  */
 async function runMaterializedQueries(ctx) {
-  const catalogName = ctx.catalogNameFromConfig || "stripe";
-  const sql = `SELECT id, email FROM "${catalogName}"."${ctx.schemaName}"."customers"`;
+  // Resolved by the provisioning step below, never read from config - see the
+  // comment on that step for why this scenario cannot use the shared catalog.
+  let catalogName = null;
+  let sql = null;
   let materializedId = null;
   let sourceQueryId = null;
+
+  // RUNS IN ITS OWN CATALOG, for the same reason M does.
+  //
+  // This scenario materializes `customers` - one of the four tables C caches,
+  // in the shared catalog, from a parallel Jest worker. Querying a table live
+  // while a cache on it is syncing returns 0 rows, because Peaka's query
+  // routing prefers an existing cache even before it has data. Materializing
+  // across that window is what a 2026-07-31 run looked like: the initial
+  // materialization sat at RUNNING past the 90s poll budget and the scenario
+  // failed on its second step, with nothing wrong in this file.
+  //
+  // Nothing here needs the shared catalog - `customers` is a fixture for
+  // exercising the materialized-query endpoints, not data under test. An
+  // independent catalog on its own connection has identical contents and is
+  // invisible to C.
+  await step("provision an isolated catalog", async () => {
+    const name = `e2e-auto-matq-cat-${ctx.runTag}`;
+    const conn = await ctx.client.createConnection({
+      name,
+      type: "stripe",
+      credential: { token: ctx.stripeToken },
+    });
+    assertStatus(conn, 200, "createConnection (materialized-query catalog)");
+    ctx.createdConnectionIds.push(conn.body.id);
+
+    const cat = await ctx.client.createCatalog({ name, connectionId: conn.body.id });
+    assertStatus(cat, 200, "createCatalog (materialized-query catalog)");
+    ctx.createdCatalogIds.push(cat.body.id);
+    assert(
+      String(cat.body.id) !== String(ctx.catalogId),
+      "This scenario must never fall back to the shared PEAKA_CATALOG_ID"
+    );
+
+    const read = await ctx.client.getCatalog(cat.body.id);
+    assertStatus(read, 200, "getCatalog (materialized-query catalog)");
+    catalogName = read.body.name;
+    assert(catalogName, `Expected a queryable catalog name, got: ${JSON.stringify(read.body)}`);
+
+    sql = `SELECT id, email FROM "${catalogName}"."${ctx.schemaName}"."customers"`;
+    console.log(`materialized queries will read from throwaway catalog ${catalogName} (${cat.body.id})`);
+  });
 
   /**
    * Polls until `accept(status)` is true.
@@ -121,64 +164,45 @@ async function runMaterializedQueries(ctx) {
     );
   });
 
-  // OBSERVED NON-DETERMINISM (2026-07-29): after cancelling, this sometimes
-  // settles to CANCELED within a few seconds and sometimes sits at RUNNING
-  // for well over 90s. Both were seen on consecutive runs of identical code.
+  // DETERMINISTIC BY CONSTRUCTION: settle first, THEN cancel.
   //
-  // So this deliberately does NOT assert how quickly it settles - a test that
-  // fails on a coin flip is worse than no test. What IS invariant, and what
-  // actually matters to a caller, is asserted instead:
-  //   1. cancel is accepted rather than erroring
-  //   2. the query is never left permanently wedged - a later refresh always
-  //      brings it back to COMPLETED
-  // Point 2 is the real check. If a cancel could permanently break a
-  // materialized query, that's a serious bug; a slow status transition is not.
-  await step("cancel is accepted", async () => {
-    await ctx.client.refreshMaterializedQuery(materializedId);
+  // This used to trigger a refresh and immediately cancel it - a deliberate
+  // race, and the main suite is the wrong place for one. The outcome depended
+  // on who won: measured across runs the query settled at COMPLETED, at
+  // CANCELED, and once not at all within 90s, on identical code. The step
+  // accepted [200, 404, 409] and could not assert much as a result.
+  //
+  // Worse, the follow-up "recovery" check could be satisfied by a STALE
+  // status: whenever the race landed on COMPLETED - the more common outcome -
+  // a poll waiting for COMPLETED returned instantly without the recovery
+  // refresh having run at all.
+  //
+  // Letting the refresh finish first makes "nothing is running" a guarantee,
+  // so the endpoint's contract can be asserted exactly. Cancelling a refresh
+  // that is genuinely in flight is a race, and now lives in
+  // tests/races/tier1.js where the harness enters the window on purpose.
+  await step("cancel with nothing running is handled cleanly", async () => {
+    // Make sure the previous refresh is finished before cancelling.
+    await pollStatus("settle before cancelling", (s) => TERMINAL.includes(s));
+
     const res = await ctx.client.cancelMaterializedQueryRefresh(materializedId);
-    assertStatusIn(res, [200, 404, 409], "cancelMaterializedQueryRefresh");
-    if (res.status !== 200) {
-      console.log(`note: cancel returned ${res.status} - the refresh had already finished`);
-    }
+    // Measured 200 in this state across repeated runs. Kept as a set rather
+    // than a bare 200 because the endpoint is documented for an active
+    // workflow and a not-found response would be equally defensible here -
+    // what matters is that it does not error.
+    assertStatusIn(res, [200, 404], "cancelMaterializedQueryRefresh with nothing running");
+    console.log(`cancel with nothing running -> ${res.status}`);
   });
 
-  await step("a cancelled query is never left permanently wedged", async () => {
-    // Give it a while to settle on its own, but don't require it to.
-    let settled = null;
-    for (let attempt = 1; attempt <= 20; attempt++) {
-      const res = await ctx.client.getMaterializedQueryStatus(materializedId);
-      assertStatus(res, 200, "getMaterializedQueryStatus (post-cancel)");
-      const status = String(res.body.status).toUpperCase();
-      if (TERMINAL.includes(status)) {
-        settled = status;
-        break;
-      }
-      await sleep(POLL_INTERVAL_MS);
-    }
-    console.log(
-      settled
-        ? `post-cancel status settled at '${settled}'`
-        : "post-cancel status still RUNNING after ~40s - known to vary; recovering via refresh"
-    );
-
-    // The assertion that matters: a refresh brings it back to COMPLETED
-    // regardless of how the cancel left it.
-    //
-    // KEYS ON THE EXECUTION TIMESTAMP, NOT THE STATUS, and that distinction is
-    // load-bearing. The status endpoint keeps reporting the PREVIOUS terminal
-    // status until the newly triggered run starts, so any status-based poll
-    // can be satisfied by a stale value the instant it is called.
-    //
-    // An earlier version waited for "COMPLETED or FAILED" to avoid being
-    // satisfied by the stale CANCELED - but that only closed half the hole.
-    // The step above settles at CANCELED *or* COMPLETED depending on who wins
-    // the race, and COMPLETED is the more common outcome. Whenever it landed
-    // there, this poll returned immediately on the stale COMPLETED and the
-    // assertion verified nothing at all.
-    //
-    // lastExecutionStartTime changes only when a genuinely new execution
-    // begins, so requiring BOTH a changed timestamp AND a terminal status
-    // proves the recovery refresh actually ran, whatever preceded it.
+  // The invariant that matters regardless of how any cancel left things: a
+  // materialized query must never be permanently wedged.
+  //
+  // KEYS ON THE EXECUTION TIMESTAMP, NOT THE STATUS. The status endpoint keeps
+  // reporting the PREVIOUS terminal status until the newly triggered run
+  // starts, so any status-based poll can be satisfied by a stale value the
+  // instant it is called - which is exactly the bug described above.
+  // lastExecutionStartTime changes only when a genuinely new execution begins.
+  await step("a refresh always brings the query back to COMPLETED", async () => {
     const before = await ctx.client.getMaterializedQueryStatus(materializedId);
     assertStatus(before, 200, "getMaterializedQueryStatus (before recovery)");
     const priorExecutionStart = before.body.lastExecutionStartTime;
@@ -190,7 +214,7 @@ async function runMaterializedQueries(ctx) {
       "recovery refresh",
       (s, body) => (s === "COMPLETED" || s === "FAILED") && body.lastExecutionStartTime !== priorExecutionStart
     );
-    assertEqual(String(last.status).toUpperCase(), "COMPLETED", "status after recovering from a cancel");
+    assertEqual(String(last.status).toUpperCase(), "COMPLETED", "status after a recovery refresh");
     assert(
       last.lastExecutionStartTime !== priorExecutionStart,
       `The recovery refresh never produced a new execution - lastExecutionStartTime is still ` +

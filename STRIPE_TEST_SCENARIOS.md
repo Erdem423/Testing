@@ -1,13 +1,8 @@
 # Peaka × Stripe Connector — Test Coverage
 
-Twelve scenarios. `A`/`B`/`C`/`F` share `jest/stripe/connector.test.js` and run concurrently via `test.concurrent()`; `G`-`N` each have their own `jest/stripe/<name>.test.js` so Jest runs them in separate worker processes. All step logic lives in `tests/stripe/*.js` — see the README's "Why the 4 tests run concurrently, safely" section for why the shared-file four are safe.
+Eleven scenarios. `B`/`C`/`F` share `jest/stripe/connector.test.js` and run concurrently via `test.concurrent()`; `G`-`N` each have their own `jest/stripe/<name>.test.js` so Jest runs them in separate worker processes. All step logic lives in `tests/stripe/*.js` — see the README's "Why the tests run concurrently, safely" section for why the shared-file ones are safe.
 
-## A: Connection Setup
-
-| Step | What it does | Expected result |
-|---|---|---|
-| Create valid connection | POST `/connections/{projectId}` with `type: stripe`, valid `sk_test_` token | 200, response includes `id`, `type: stripe` |
-| Reject invalid token | Same, with a garbage token | 4xx error, or a 200 with a note to verify it fails downstream |
+**`A: Connection Setup` no longer exists.** It was merged into `G: Connection Endpoints` on 2026-07-31: both scenarios covered connections, and A's "create a valid connection" step asserted a strict subset of what G's first step already asserts (id present, `type: stripe`) before going on to prove the connection is listable, readable, updatable and deletable. Only A's invalid-token check tested something G didn't, so that step moved to G and A was deleted rather than left duplicating coverage.
 
 ## B: Catalog & Schema Discovery
 
@@ -80,7 +75,7 @@ One simple test per endpoint, with scope taken from Peaka's own API reference ra
 
 | Scenario | Endpoints | Notes |
 |---|---|---|
-| **G: Connection Endpoints** | create, list, get, update, delete, list/get connector config | Includes a **credential-masking** check: the serialized `getConnection` body is scanned for the raw token and for `sk_`/`rk_` prefixes. Deletion is asserted (Peaka returns `400`, not `404`) |
+| **G: Connection Endpoints** | create, list, get, update, delete, list/get connector config | Absorbed the former `A: Connection Setup`, so it also covers invalid-token handling. Includes a **credential-masking** check: the serialized `getConnection` body is scanned for the raw token and for `sk_`/`rk_` prefixes. Deletion is asserted (Peaka returns `400`, not `404`) |
 | **H: Catalog Endpoints** | catalog create/list/delete, project search, table statistics | Uses a throwaway catalog; explicitly re-asserts that `PEAKA_CATALOG_ID` survived. Table statistics returns `400 "Catalog type: stripe is not being supported yet"` - asserted as known behaviour |
 | **I: Saved Query Endpoints** | query create/list/read/update/delete, SQL transpile | Needs no catalog. Transpile returns `{query}` though the docs say `{result}` - both accepted |
 | **J: Internal Table Endpoints** | table create/list/delete, column add/list/delete | Project-level, no catalog needed |

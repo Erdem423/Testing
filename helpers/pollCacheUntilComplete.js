@@ -1,4 +1,5 @@
 const { assertStatus } = require("./assert");
+const { mostRecentExecution, effectiveStatus, isSettled } = require("./cacheExecution");
 
 async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -52,13 +53,17 @@ async function pollCacheUntilComplete(ctx, cacheId, options = {}) {
     assertStatus(res, 200, "getCacheStatus");
     lastBody = res.body;
 
-    // Prefer the most specific execution status available, fall back to
-    // the top-level cache status.
-    const execution = res.body.lastIncrementalCacheExecution || res.body.lastFullRefreshCacheExecution;
-    const rawStatus = (execution && execution.status) || res.body.status;
-    const status = (rawStatus || "").toUpperCase();
+    // Reads the MOST RECENT execution record - see helpers/cacheExecution.js.
+    // This used to be `incremental || fullRefresh`, which made every full
+    // refresh invisible behind a stale COMPLETED incremental and let this
+    // function return without waiting for anything at all.
+    const execution = mostRecentExecution(res.body);
+    const status = effectiveStatus(res.body);
 
-    if (SUCCESS_STATUSES.has(status)) {
+    // isSettled() also requires the TOP-LEVEL status to be terminal, which
+    // covers the ~300ms after triggerFullRefresh where the new execution
+    // record does not exist yet and only the stale incremental one is visible.
+    if (SUCCESS_STATUSES.has(status) && isSettled(res.body)) {
       return;
     }
     if (FAILURE_STATUSES.has(status)) {

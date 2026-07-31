@@ -30,6 +30,36 @@ async function dashboardIsRunning(port = process.env.PORT || 3000) {
 }
 
 /**
+ * Did the responding dashboard LAUNCH this run, rather than merely being up?
+ *
+ * Without this the check is self-defeating: running the races from the
+ * dashboard means the dashboard is necessarily serving on port 3000, so the
+ * preflight detected its own launcher and refused every time. The races could
+ * only ever be run from a terminal - reported 2026-07-31, and a real bug in
+ * this file rather than in the dashboard.
+ *
+ * server.js sets PEAKA_STEP_REPORT_URL immediately before invoking runCLI and
+ * deletes it afterwards, so its presence means "a dashboard started me". The
+ * port is compared too, so a run launched by a dashboard on one port still
+ * refuses if a DIFFERENT stray dashboard is answering on the port we probe.
+ *
+ * This is safe because server.js's `runInProgress` flag already rejects a
+ * second dashboard run with a 409 while one is in flight - the overlap this
+ * check exists to prevent cannot happen through the dashboard. A terminal
+ * `npm test` started separately still can, which is what the mid-sync cache
+ * check below catches; the port probe never detected that case anyway.
+ */
+function launchedByThisDashboard(port) {
+  const url = process.env.PEAKA_STEP_REPORT_URL;
+  if (!url) return false;
+  try {
+    return String(new URL(url).port || "80") === String(port);
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
  * A cache mid-sync strongly implies a live run elsewhere. Settled caches are
  * only debris - the race scenarios clear those themselves - so they do not
  * block, they just get reported.
@@ -54,12 +84,24 @@ async function activeCaches(client) {
 async function assertSafeToRaceOrThrow(client, log = console.log) {
   const problems = [];
 
-  if (await dashboardIsRunning()) {
-    problems.push(
-      "The web dashboard is responding on port 3000. It runs the same Jest suites against the same " +
-        "Peaka project, so leaving it up while these run produces unintended races. Stop it first " +
-        "(on Windows `pkill` from Git Bash does NOT reliably kill it - use PowerShell Get-CimInstance)."
-    );
+  const port = process.env.PORT || 3000;
+  if (await dashboardIsRunning(port)) {
+    if (launchedByThisDashboard(port)) {
+      log(
+        `note: the dashboard on port ${port} launched this run, so it is not treated as a competing one. ` +
+          `Its runInProgress guard already prevents a second dashboard run from overlapping.`
+      );
+    } else {
+      problems.push(
+        `The web dashboard is responding on port ${port} and did not launch this run. It runs the same ` +
+          `Jest suites against the same Peaka project, so leaving it up while these run produces ` +
+          `unintended races.\n` +
+          `    Stop it with PowerShell (Git Bash's \`pkill\` only sees its own process tree and will ` +
+          `silently kill nothing):\n` +
+          `      Get-NetTCPConnection -LocalPort ${port} -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }\n` +
+          `    Or run the races FROM the dashboard, which is now supported.`
+      );
+    }
   }
 
   const { running, settled } = await activeCaches(client);
@@ -86,4 +128,4 @@ async function assertSafeToRaceOrThrow(client, log = console.log) {
   }
 }
 
-module.exports = { assertSafeToRaceOrThrow, dashboardIsRunning, activeCaches };
+module.exports = { assertSafeToRaceOrThrow, dashboardIsRunning, launchedByThisDashboard, activeCaches };

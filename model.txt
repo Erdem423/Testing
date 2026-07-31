@@ -1,4 +1,0 @@
-Table:          customers, charges, subscriptions, invoices, promotion_codes, refunds
-CacheSchedule:  none, incremental, fullRefresh
-QueryFormat:    CELL_TYPED, SIMPLE, COMPACT
-QueryMechanism: sql, builder, byId
