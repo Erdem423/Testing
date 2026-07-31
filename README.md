@@ -327,6 +327,10 @@ This is the orphaned-cache scenario `CONCURRENCY-SPEC.md` gates Tier 2 #4 behind
 
 **Worth reporting upstream as:** cache deletion can leave a catalog's table pointing at a dropped Iceberg table, breaking both reads and re-caching, with `isCached` still reporting `true` and no API handle to clear it.
 
+**Not reproducible on demand.** Six deliberate attempts in a throwaway catalog all came back healthy: delete mid-sync then re-create; six normal create/settle/delete cycles; delete before `RUNNING` appears; provoking the mid-sync duplicate-create `500` then re-creating; `deleteCache` and `createCache` fired concurrently; and two concurrent creates on a cold table. So the `500` does *not* leave the location dirty, and neither does concurrent create/delete — whatever triggers this needs a rarer condition. Two useful by-products: a create issued *during* a delete returns `500` (a fourth `500` path, non-destructive), and two concurrent creates on a cold table both return `200`.
+
+**So it is detected rather than reproduced.** `C`'s first step now cross-checks `isTableCached` against the catalog's cache listing. A table reporting `isCached: true` while **no cache is listed** is a contradiction Peaka should never produce, and it is this corruption's exact signature. The check costs one extra API call and fails in **3.6s with a diagnosis**, where previously the problem surfaced ~48s later as an opaque Iceberg error several steps removed from the cause. Verified both ways: it fires on the real corrupted `invoices`, and stays quiet when a legitimate cache exists.
+
 ### Smaller API quirks found while covering the base endpoints
 
 None of these are severe on their own, but each one silently breaks naive client code, and several

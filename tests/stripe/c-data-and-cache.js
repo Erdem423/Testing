@@ -140,6 +140,35 @@ async function runDataAndCache(ctx) {
 
     let alreadyCached = await check();
 
+    // CORRUPTION DETECTOR. A table reporting isCached:true while NO cache is
+    // listed for the catalog is a contradiction Peaka should never produce,
+    // and it is the exact signature of an unrecoverable state hit on
+    // 2026-07-31 (see the README's "Deleting a cache can permanently break a
+    // table"): the table could not be queried (400, pointing at a dropped
+    // Iceberg table), could not be re-cached (400, "non-empty location"), and
+    // exposed no cache id to delete. No API-side repair exists.
+    //
+    // Six attempts to reproduce it deliberately all failed - delete mid-sync,
+    // repeated normal cycles, immediate delete, the mid-sync duplicate-create
+    // 500, concurrent delete+create, and concurrent creates - so this cannot
+    // be a reproduction test. Detection is what's achievable, and it is worth
+    // having: without it the corruption surfaced ~40s later as an opaque
+    // Iceberg error from createCache, several steps removed from the cause.
+    if (alreadyCached.length > 0) {
+      const listed = await ctx.client.getAllCacheStatusesOfCatalog(ctx.catalogId);
+      assertStatus(listed, 200, "getAllCacheStatusesOfCatalog");
+      const listedTables = new Set((listed.body || []).map((entry) => entry.tableName));
+      const phantom = alreadyCached.filter((t) => !listedTables.has(t));
+      assert(
+        phantom.length === 0,
+        `CORRUPTED CACHE STATE: [${phantom.join(", ")}] report isCached:true but no cache is listed for ` +
+          `this catalog. That combination is unrecoverable through the API - the table cannot be queried ` +
+          `or re-cached, and there is no cache id to delete. Repair it in Peaka Studio (recreating the ` +
+          `catalog entry works; the same table caches fine in a fresh catalog). See the README's ` +
+          `"Deleting a cache can permanently break a table" for the full diagnosis.`
+      );
+    }
+
     // SELF-HEAL RATHER THAN SILENTLY SKIP.
     //
     // This used to just set skipLivePhase and print a note, which disabled
