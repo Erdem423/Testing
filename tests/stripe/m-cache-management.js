@@ -201,45 +201,28 @@ async function runCacheManagement(ctx) {
     assertStatus(res, 200, "triggerIncrementalUpdate");
   });
 
-  // Best-effort by design: the sync may already have finished on a 0-row
-  // table, in which case there's no running workflow and 404 is the
-  // documented, correct answer.
-  let cancelledIncremental = false;
-  await step("cancel the incremental update (404 if it already finished)", async () => {
-    const res = await ctx.client.cancelIncrementalUpdate(cacheId);
-    assertStatusIn(res, [200, 404], "cancelIncrementalUpdate");
-    cancelledIncremental = res.status === 200;
-    if (!cancelledIncremental) {
-      console.log("note: no running incremental workflow to cancel - the sync had already finished (expected on a 0-row table)");
-    }
-  });
+  // DETERMINISTIC BY CONSTRUCTION: settle first, THEN cancel.
+  //
+  // This used to cancel immediately after triggering, which made the outcome a
+  // race - 200 if the cancel beat the sync, 404 if it didn't - so the step
+  // accepted [200, 404] and asserted almost nothing. In practice the 404 branch
+  // won essentially always, because FIXTURE_TABLE syncs in ~2.5s; the tolerance
+  // was papering over an outcome that was already effectively fixed.
+  //
+  // Waiting for the sync to finish makes "nothing is running" a guarantee
+  // rather than an accident, so 404 becomes an exact assertion and this covers
+  // the endpoint's real contract: cancelling when there is no active workflow
+  // reports not-found rather than erroring.
+  //
+  // The interesting case - cancelling something GENUINELY mid-flight - is a
+  // deliberate race and now lives in tests/races/tier1.js, where the harness
+  // enters the running window on purpose instead of hoping to land in it. The
+  // main suite stays deterministic; the races do the racing.
+  await step("cancel with nothing running reports not-found", async () => {
+    await pollCacheUntilComplete(ctx, cacheId);
 
-  // Deliberately polls raw status rather than pollCacheUntilComplete: that
-  // helper treats CANCELLED as a terminal FAILURE (correctly - see PR #3),
-  // which is exactly the state we just asked for. So this is the one place
-  // in the suite that exercises the CANCELLED terminal status on purpose.
-  await step("the cache settles into a terminal state after cancelling", async () => {
-    const TERMINAL = ["COMPLETED", "CANCELLED", "FAILED", "DELETED"];
-    let status = null;
-    for (let attempt = 1; attempt <= 20; attempt++) {
-      const res = await ctx.client.getCacheStatus(cacheId);
-      assertStatus(res, 200, "getCacheStatus (post-cancel)");
-      const exec = res.body.lastIncrementalCacheExecution || res.body.lastFullRefreshCacheExecution;
-      status = String((exec && exec.status) || res.body.status).toUpperCase();
-      if (TERMINAL.includes(status)) break;
-      await new Promise((r) => setTimeout(r, 3000));
-    }
-    assert(TERMINAL.includes(status), `Cache never settled after cancelling; last status was ${status}`);
-    if (cancelledIncremental) {
-      // A successful cancel should land on CANCELLED - but a sync that
-      // finished in the gap between the cancel call and the first poll can
-      // legitimately show COMPLETED instead.
-      assert(
-        status === "CANCELLED" || status === "COMPLETED",
-        `Expected CANCELLED (or COMPLETED if it raced to finish) after a successful cancel, got ${status}`
-      );
-      console.log(`cancel-then-settle landed on ${status}`);
-    }
+    const res = await ctx.client.cancelIncrementalUpdate(cacheId);
+    assertStatus(res, 404, "cancelIncrementalUpdate with no active workflow");
   });
 
   await step("trigger a full refresh", async () => {
@@ -247,53 +230,51 @@ async function runCacheManagement(ctx) {
     assertStatus(res, 200, "triggerFullRefresh");
   });
 
-  // WAITS FOR THE EXECUTION RECORD BEFORE CANCELLING, and that wait is the
-  // whole point of this step's shape.
+  // Same shape as the incremental cancel above: settle first, then cancel, so
+  // "nothing is running" is guaranteed rather than incidental.
   //
-  // Cancelling immediately after the trigger made this step flake under load
-  // with a genuine server error:
+  // Waiting also sidesteps a genuine server bug this step used to provoke.
+  // Cancelling straight after the trigger returned, under load:
   //   500 NullPointerException - "Cannot invoke CacheExecutionInfo.getStatus()
   //   because getLastFullRefreshCacheExecution() is null"
+  // Peaka dereferences the full-refresh execution record without a null check,
+  // and that record is created ASYNCHRONOUSLY after the trigger returns 200.
+  // Measured: the trigger takes ~2.3s to return and the record appears ~300ms
+  // later, so there is a narrow window where cancel NPEs. At normal speed the
+  // trigger covers it; under load the gap widens. That is how M failed at 124s
+  // in a full-suite run while passing at 21s alone.
   //
-  // Peaka's cancel handler dereferences the full-refresh execution record
-  // without a null check, and that record is created ASYNCHRONOUSLY after the
-  // trigger returns 200. Measured: triggerFullRefresh takes ~2.3s to return
-  // and the record appears ~300ms later, so there is a narrow window in which
-  // cancel NPEs. At normal API speed the trigger is slow enough to cover it;
-  // under load the gap widens and the cancel lands inside it. That is how M
-  // came to fail at 124s in a full-suite run while passing at 21s alone.
+  // Letting the refresh finish removes the null precondition entirely - the
+  // record exists by then - so this asserts the endpoint's contract rather
+  // than racing record creation. Cancelling something genuinely mid-flight is
+  // in tests/races/tier1.js.
   //
-  // Polling until the record exists removes the null precondition entirely, so
-  // this tests CANCEL rather than racing record creation. The accepted
-  // statuses are deliberately unchanged - a 5xx must still fail the run. This
-  // stops provoking the bug; it does not hide it.
-  await step("cancel the full refresh (404 if it already finished)", async () => {
-    const TERMINAL = ["COMPLETED", "FAILED", "CANCELLED", "CANCELED"];
-    let sawRecord = false;
-    for (let attempt = 1; attempt <= 40; attempt++) {
-      const status = await ctx.client.getCacheStatus(cacheId);
-      assertStatus(status, 200, "getCacheStatus (waiting for the full-refresh record)");
-      const exec = status.body.lastFullRefreshCacheExecution;
-      if (exec) {
-        sawRecord = true;
-        // Already finished is fine - cancel then legitimately returns 404.
-        if (TERMINAL.includes(String(exec.status).toUpperCase())) break;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 250));
-    }
-    if (!sawRecord) {
-      console.log(
-        "note: no full-refresh execution record appeared within ~10s. Cancelling anyway - if this returns " +
-          "500 it is the known NullPointerException on a null execution record, not a test bug."
-      );
-    }
+  // THIS STEP CAUGHT A BUG IN THE TEST HARNESS ITSELF, which is worth writing
+  // down because the wrong conclusion was very convincing.
+  //
+  // Pinned to 404 to match the incremental cancel, it failed with 200. The
+  // obvious reading was that the two cancel endpoints disagree about an idle
+  // cache. They do not. The real cause was in pollCacheUntilComplete, which read
+  //     lastIncrementalCacheExecution || lastFullRefreshCacheExecution
+  // and the incremental step above leaves a COMPLETED incremental record behind
+  // permanently - so the "wait for the refresh to finish" call returned on its
+  // FIRST poll having inspected the wrong record. The cancel then landed on a
+  // refresh that was still running, which is a real cancel and really does
+  // return 200. That is exactly the race this rewrite existed to remove; the
+  // step only looked deterministic.
+  //
+  // Both endpoints return 404 on a genuinely idle cache - confirmed directly
+  // once the shadowing was fixed. See helpers/cacheExecution.js.
+  //
+  // The lesson generalises: "I settled it first" is only as trustworthy as the
+  // status the settle actually read. Pinning the assertion to a single value is
+  // what exposed it - hedging on [200, 404] had concealed the same broken wait
+  // for as long as this step had existed.
+  await step("cancel a full refresh with nothing running reports not-found", async () => {
+    await pollCacheUntilComplete(ctx, cacheId);
 
     const res = await ctx.client.cancelFullRefresh(cacheId);
-    assertStatusIn(res, [200, 404], "cancelFullRefresh");
-    if (res.status === 404) {
-      console.log("note: no running full-refresh workflow to cancel - it had already finished");
-    }
+    assertStatus(res, 404, "cancelFullRefresh with no active workflow");
   });
 
   await step("batch cache creation reports per-item results", async () => {

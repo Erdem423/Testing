@@ -28,11 +28,9 @@ module.exports = {
   icon: "💳",
   scenarios: [
     {
-      name: "A: Connection Setup",
-      category: "Connection",
-      steps: ["create valid connection", "reject invalid token"],
-    },
-    {
+      // "A: Connection Setup" used to sit here. Merged into G on 2026-07-31 -
+      // same subject, and A's create step asserted a subset of G's. See
+      // tests/stripe/g-connections.js.
       name: "B: Catalog & Schema Discovery",
       category: "Discovery",
       steps: [
@@ -94,6 +92,7 @@ module.exports = {
       category: "Connections",
       steps: [
         "create a connection",
+        "an invalid token is not silently accepted",
         "list connections includes the new one",
         "get connection returns its metadata",
         "connection response never leaks the Stripe key",
@@ -168,12 +167,13 @@ module.exports = {
       name: "N: Materialized Query Endpoints",
       category: "Queries",
       steps: [
+        "provision an isolated catalog",
         "create a materialized query",
         "its status reaches a terminal state",
         "the project-wide status list includes it",
         "trigger a refresh and wait for it to settle",
-        "cancel is accepted",
-        "a cancelled query is never left permanently wedged",
+        "cancel with nothing running is handled cleanly",
+        "a refresh always brings the query back to COMPLETED",
         "a materialized query can reference an existing query",
         "delete the materialized query",
       ],
@@ -194,10 +194,9 @@ module.exports = {
         "catalog-wide cache statuses include this cache",
         "schema-wide cache statuses (known 500)",
         "trigger an incremental update",
-        "cancel the incremental update (404 if it already finished)",
-        "the cache settles into a terminal state after cancelling",
+        "cancel with nothing running reports not-found",
         "trigger a full refresh",
-        "cancel the full refresh (404 if it already finished)",
+        "cancel a full refresh with nothing running reports not-found",
         "batch cache creation reports per-item results",
         "delete the cache and confirm it is gone",
       ],

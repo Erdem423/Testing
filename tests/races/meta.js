@@ -26,16 +26,20 @@ module.exports = {
   icon: "⚡",
   scenarios: [
     {
-      // ~205s: every step provisions a fresh cache on a ~37s-syncing table and
-      // waits for it to settle again afterwards.
+      // Long - every step provisions a fresh cache on a ~37s-syncing table and
+      // waits for it to settle again afterwards. The three cancel steps add a
+      // trigger-and-settle cycle each on top of that, so budget ~7 minutes.
       name: "RACE-T1: Cache operation conflicts",
       category: "Cache races",
       steps: [
-        "resolve catalog name",
+        "provision an isolated catalog for the races",
         "CANARY: querying rows mid-sync returns 0 (validates the harness)",
         "duplicate createCache mid-sync (known 500) is non-destructive",
         "deleteCache mid-sync does not orphan the cache",
         "simultaneous incremental + full refresh do not corrupt the cache",
+        "cancelling a running incremental update settles cleanly",
+        "cancelling a running full refresh settles cleanly",
+        "cancelling a running materialized refresh never wedges the query",
         "the slow table is left uncached",
       ],
     },

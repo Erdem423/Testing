@@ -17,16 +17,22 @@
  *                      to compare both outcomes.
  */
 
+const { effectiveStatus, isSettled, TERMINAL } = require("./cacheExecution");
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const TERMINAL = ["COMPLETED", "FAILED", "CANCELLED", "CANCELED", "DELETED"];
-
-/** Reads the most specific status available for a cache. */
+/**
+ * Reads a cache's current status.
+ *
+ * Delegates to helpers/cacheExecution.js, which picks the most RECENT execution
+ * record. This file used to prefer the incremental one unconditionally, so a
+ * full refresh raced here was shadowed by a stale COMPLETED and every
+ * "did it settle?" check passed without waiting.
+ */
 async function readCacheStatus(ctx, cacheId) {
   const res = await ctx.client.getCacheStatus(cacheId);
   if (res.status !== 200) return { status: `HTTP_${res.status}`, body: res.body };
-  const exec = res.body.lastIncrementalCacheExecution || res.body.lastFullRefreshCacheExecution;
-  return { status: String((exec && exec.status) || res.body.status).toUpperCase(), body: res.body };
+  return { status: effectiveStatus(res.body), body: res.body, settled: isSettled(res.body) };
 }
 
 /**
@@ -117,7 +123,10 @@ async function waitForSettled(ctx, cacheId, { pollMs = 3000, maxAttempts = 40 } 
   let last = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     last = await readCacheStatus(ctx, cacheId);
-    if (TERMINAL.includes(last.status)) return { settled: true, status: last.status };
+    // `last.settled` requires the top-level status to be terminal too, so a
+    // refresh triggered moments ago - whose execution record has not been
+    // created yet - is not mistaken for a finished one.
+    if (last.settled) return { settled: true, status: last.status };
     await sleep(pollMs);
   }
   return { settled: false, status: last && last.status };

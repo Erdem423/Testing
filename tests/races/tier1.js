@@ -1,6 +1,13 @@
 const { assertStatus, assertStatusIn, assert } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
-const { duringSync, simultaneously, waitForSettled, readCacheStatus, sleep } = require("../../helpers/raceWindow");
+const {
+  duringState,
+  duringSync,
+  simultaneously,
+  waitForSettled,
+  sleep,
+  TERMINAL,
+} = require("../../helpers/raceWindow");
 
 // Chosen because it syncs SLOWLY (~37s), giving a wide window to fire into.
 // This is the opposite of what m-cache-management.js wants - do not
@@ -265,6 +272,250 @@ async function runTier1Races(ctx) {
     const del = await ctx.client.deleteCache(cacheId);
     assertStatus(del, 200, "deleteCache after the refresh clash");
     ctx.createdCacheIds = ctx.createdCacheIds.filter((id) => id !== cacheId);
+  });
+
+  // ---------------------------------------------------------------- TIER 1.4
+  // CANCELLING SOMETHING GENUINELY IN FLIGHT.
+  //
+  // These three steps moved here out of the main suite (m-cache-management.js
+  // and n-materialized-queries.js). Both files used to trigger an operation and
+  // immediately cancel it, which is a race - the outcome depended on whether
+  // the cancel or the operation won, so they hedged on [200, 404, 409] and
+  // asserted almost nothing. Worse, the common outcome was that the operation
+  // had ALREADY FINISHED, so the "cancel" tested the idle path by accident.
+  //
+  // Split by state instead: the main suite settles first and asserts the
+  // nothing-is-running contract exactly, and the real race lives here, where
+  // the harness enters the window on purpose and reports what it found.
+  await step("cancelling a running incremental update settles cleanly", async () => {
+    const cacheId = await freshCache();
+    const first = await waitForSettled(ctx, cacheId);
+    assert(first.settled, `Initial sync never settled (last: ${first.status})`);
+
+    const trigger = await ctx.client.triggerIncrementalUpdate(cacheId);
+    assertStatus(trigger, 200, "triggerIncrementalUpdate");
+
+    const outcome = await duringSync(ctx, cacheId, () => ctx.client.cancelIncrementalUpdate(cacheId));
+    console.log(
+      `cancelIncrementalUpdate mid-flight -> ${outcome.result.status} ` +
+        `(entered window: ${outcome.enteredWindow}, status at fire: ${outcome.statusAtFire})`
+    );
+    if (!outcome.enteredWindow) {
+      console.log("  window missed - the incremental finished first; invariants still checked below");
+    }
+    assert(
+      outcome.result.status < 500,
+      `cancelIncrementalUpdate returned ${outcome.result.status} on a running update - a server error`
+    );
+
+    // The invariant: a cancel must never leave the cache stuck mid-flight.
+    const settled = await waitForSettled(ctx, cacheId);
+    assert(
+      settled.settled,
+      `Cache never settled after cancelling a running incremental update (last: ${settled.status}) - ` +
+        `a cancel that wedges a cache is a real bug`
+    );
+    console.log(`  settled at ${settled.status}`);
+
+    const del = await ctx.client.deleteCache(cacheId);
+    assertStatus(del, 200, "deleteCache after the incremental-cancel race");
+    ctx.createdCacheIds = ctx.createdCacheIds.filter((id) => id !== cacheId);
+  });
+
+  // ---------------------------------------------------------------- TIER 1.5
+  // Same shape, but this one has a KNOWN server-side failure mode, which is why
+  // it reads the full-refresh execution record specifically rather than using
+  // duringSync.
+  //
+  // Cancelling before that record exists produces:
+  //   500 NullPointerException - "Cannot invoke CacheExecutionInfo.getStatus()
+  //   because getLastFullRefreshCacheExecution() is null"
+  // Peaka dereferences the record without a null check, and the record is
+  // created ASYNCHRONOUSLY after the trigger returns 200 (measured: trigger
+  // returns in ~2.3s, record appears ~300ms later).
+  //
+  // duringSync would ALMOST do - helpers/cacheExecution.js now picks the most
+  // recent execution record, so a full refresh is no longer shadowed by a stale
+  // COMPLETED incremental (it was, and that bug is written up in the README).
+  // This still reads the full-refresh slot directly for the other half of the
+  // reason: waiting for that specific record guarantees it is non-null, which
+  // is the NPE's precondition. So a 500 here means something genuinely new
+  // rather than the already-documented crash.
+  await step("cancelling a running full refresh settles cleanly", async () => {
+    const cacheId = await freshCache();
+    const first = await waitForSettled(ctx, cacheId);
+    assert(first.settled, `Initial sync never settled (last: ${first.status})`);
+
+    const readFullRefresh = async () => {
+      const res = await ctx.client.getCacheStatus(cacheId);
+      if (res.status !== 200) return `HTTP_${res.status}`;
+      const exec = res.body.lastFullRefreshCacheExecution;
+      return exec ? String(exec.status).toUpperCase() : "NO_RECORD";
+    };
+    const before = await readFullRefresh();
+
+    const trigger = await ctx.client.triggerFullRefresh(cacheId);
+    assertStatus(trigger, 200, "triggerFullRefresh");
+
+    const outcome = await duringState(
+      readFullRefresh,
+      (s) => s === "RUNNING",
+      () => ctx.client.cancelFullRefresh(cacheId),
+      // Never give up on NO_RECORD - that is precisely the state being waited
+      // out. Only a status that was already terminal BEFORE the trigger could
+      // end the poll early, and that is indistinguishable from a stale value,
+      // so let the timeout handle it instead.
+      { pollMs: 250, maxWaitMs: 25000, isDone: () => false }
+    );
+
+    console.log(
+      `cancelFullRefresh mid-flight -> ${outcome.result.status} ` +
+        `(entered window: ${outcome.enteredWindow}, full-refresh status at fire: ${outcome.statusAtFire}, ` +
+        `before trigger: ${before})`
+    );
+    if (!outcome.enteredWindow) {
+      console.log("  window missed - the refresh record never reported RUNNING; invariants still checked below");
+    }
+    assert(
+      outcome.result.status < 500,
+      `cancelFullRefresh returned ${outcome.result.status} with the execution record ALREADY PRESENT ` +
+        `(status at fire: ${outcome.statusAtFire}). The known NPE needs a null record, so this is a ` +
+        `different failure: ${JSON.stringify(outcome.result.body).slice(0, 300)}`
+    );
+
+    const settled = await waitForSettled(ctx, cacheId, { pollMs: 3000, maxAttempts: 50 });
+    assert(
+      settled.settled,
+      `Cache never settled after cancelling a running full refresh (last: ${settled.status})`
+    );
+    console.log(`  settled at ${settled.status}`);
+
+    const del = await ctx.client.deleteCache(cacheId);
+    assertStatus(del, 200, "deleteCache after the full-refresh-cancel race");
+    ctx.createdCacheIds = ctx.createdCacheIds.filter((id) => id !== cacheId);
+  });
+
+  // ---------------------------------------------------------------- TIER 1.6
+  // The materialized-query half of the same move, out of n-materialized-queries.js.
+  //
+  // NOTE THE SPELLING: materialized query statuses use CANCELED (one L) while
+  // cache statuses use CANCELLED (two L's). This is a real inconsistency in
+  // Peaka's API and it silently breaks any poll that handles only one - it cost
+  // a debugging session once already. TERMINAL in helpers/raceWindow.js
+  // deliberately contains both.
+  await step("cancelling a running materialized refresh never wedges the query", async () => {
+    const sql = `SELECT id, email FROM "${raceCatalogName}"."${ctx.schemaName}"."${SLOW_TABLE}"`;
+    const created = await ctx.client.createQuery({
+      displayName: `e2e-auto-race1-matq-${ctx.runTag}`,
+      inputQuery: sql,
+      queryType: "MATERIALIZED",
+    });
+    assertStatus(created, 200, "createQuery(MATERIALIZED) for the cancel race");
+    const materializedId = created.body.id;
+    ctx.createdQueryIds.push(materializedId);
+
+    const readStatus = async () => {
+      const res = await ctx.client.getMaterializedQueryStatus(materializedId);
+      return res.status === 200 ? String(res.body.status).toUpperCase() : `HTTP_${res.status}`;
+    };
+
+    // Baseline for distinguishing a NEW execution from the stale status the
+    // endpoint keeps serving until one starts - see below.
+    const preTrigger = await ctx.client.getMaterializedQueryStatus(materializedId);
+    assertStatus(preTrigger, 200, "getMaterializedQueryStatus (before the refresh)");
+    const startBeforeTrigger = preTrigger.body.lastExecutionStartTime;
+
+    const trigger = await ctx.client.refreshMaterializedQuery(materializedId);
+    assertStatus(trigger, 200, "refreshMaterializedQuery");
+
+    // FIRST VERSION OF THIS STEP NEVER ENTERED THE WINDOW - it reported
+    // "status at fire: COMPLETED" every time, so it silently duplicated the
+    // idle-cancel case the main suite already covers.
+    //
+    // Cause: the status endpoint keeps reporting the PREVIOUS terminal status
+    // until the new run actually starts, so duringState's default isDone saw
+    // COMPLETED on the very first poll and stopped before the refresh had
+    // begun. Waiting for a specific status is not enough either - the stale
+    // value may already BE that status.
+    //
+    // So the poll ignores any status until lastExecutionStartTime moves, and
+    // never gives up on a terminal reading (isDone: false). Only a genuinely
+    // new execution can end it.
+    const readNewExecution = async () => {
+      const res = await ctx.client.getMaterializedQueryStatus(materializedId);
+      if (res.status !== 200) return `HTTP_${res.status}`;
+      if (res.body.lastExecutionStartTime === startBeforeTrigger) return "STALE";
+      return String(res.body.status).toUpperCase();
+    };
+
+    const outcome = await duringState(
+      readNewExecution,
+      (s) => s === "RUNNING",
+      () => ctx.client.cancelMaterializedQueryRefresh(materializedId),
+      { pollMs: 200, maxWaitMs: 30000, isDone: () => false }
+    );
+    console.log(
+      `cancelMaterializedQueryRefresh mid-flight -> ${outcome.result.status} ` +
+        `(entered window: ${outcome.enteredWindow}, status at fire: ${outcome.statusAtFire})`
+    );
+    assert(
+      outcome.result.status < 500,
+      `cancelMaterializedQueryRefresh returned ${outcome.result.status} - a server error`
+    );
+
+    // THE INVARIANT THAT MATTERS. How fast it settles varies wildly - measured
+    // COMPLETED immediately, CANCELED after ~20s, and once neither within 90s
+    // on identical code - so settle time is reported, not asserted. What must
+    // never happen is a cancel leaving a materialized query permanently broken.
+    let settledStatus = null;
+    for (let attempt = 1; attempt <= 40; attempt++) {
+      const s = await readStatus();
+      if (TERMINAL.includes(s)) {
+        settledStatus = s;
+        break;
+      }
+      await sleep(3000);
+    }
+    console.log(`  settled at ${settledStatus === null ? "still not terminal after ~120s" : settledStatus}`);
+
+    // Recovery keys on the EXECUTION TIMESTAMP, not the status: the status
+    // endpoint keeps reporting the previous terminal value until the new run
+    // starts, so a status-based poll can be satisfied by a stale value the
+    // instant it is called and pass without any refresh having happened.
+    const before = await ctx.client.getMaterializedQueryStatus(materializedId);
+    assertStatus(before, 200, "getMaterializedQueryStatus (before recovery)");
+    const priorExecutionStart = before.body.lastExecutionStartTime;
+
+    const recovery = await ctx.client.refreshMaterializedQuery(materializedId);
+    assertStatus(recovery, 200, "refreshMaterializedQuery (recovery after cancel)");
+
+    let recovered = null;
+    for (let attempt = 1; attempt <= 45; attempt++) {
+      const res = await ctx.client.getMaterializedQueryStatus(materializedId);
+      assertStatus(res, 200, "getMaterializedQueryStatus (recovery)");
+      const s = String(res.body.status).toUpperCase();
+      if ((s === "COMPLETED" || s === "FAILED") && res.body.lastExecutionStartTime !== priorExecutionStart) {
+        recovered = res.body;
+        break;
+      }
+      await sleep(2000);
+    }
+    assert(
+      recovered,
+      `After cancelling a running refresh, a recovery refresh never produced a NEW completed execution ` +
+        `within ~90s (lastExecutionStartTime stuck at ${priorExecutionStart}). The cancel appears to have ` +
+        `left the materialized query wedged, which would be a serious bug.`
+    );
+    assert(
+      String(recovered.status).toUpperCase() === "COMPLETED",
+      `The recovery refresh ended at ${recovered.status}, not COMPLETED - cancelling seems to have ` +
+        `damaged the query rather than just interrupting it`
+    );
+    console.log(`  recovery refresh ran: execution start moved ${priorExecutionStart} -> ${recovered.lastExecutionStartTime}`);
+
+    const del = await ctx.client.deleteQuery(materializedId);
+    assertStatus(del, 200, "deleteQuery after the materialized-cancel race");
+    ctx.createdQueryIds = ctx.createdQueryIds.filter((id) => id !== materializedId);
   });
 
   // Verifies the end state rather than assuming it. The previous version only
