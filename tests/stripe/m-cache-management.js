@@ -8,8 +8,6 @@ const { pollCacheUntilComplete } = require("../../helpers/pollCacheUntilComplete
 // table still produces a full COMPLETED execution record with real progress
 // fields, at a fraction of the cost.
 //
-// Neither table is cached by C (which caches customers/charges/subscriptions/
-// invoices), so this can't collide with it.
 const FIXTURE_TABLE = "transfers";
 const BATCH_TABLE = "refunds";
 
@@ -21,13 +19,53 @@ const BATCH_TABLE = "refunds";
  * This is the scenario that finally exercises triggerIncrementalUpdate,
  * triggerFullRefresh, cancelIncrementalUpdate and cancelFullRefreshUpdate -
  * whose paths were corrected in PR #3 but which no test had ever called.
+ *
+ * RUNS IN ITS OWN CATALOG. It used to cache into the shared
+ * PEAKA_CATALOG_ID, which put its BATCH_TABLE cache (`refunds`) in the same
+ * catalog F paginates live, in a parallel worker. That is the interference
+ * that forced the C/D merge - a table whose cache is mid-sync returns 0 rows -
+ * and it was especially bad here because F reads an empty first page as "no
+ * seed data" and SKIPS, so it would have passed while testing nothing rather
+ * than failing visibly.
+ *
+ * Nothing here needs the shared catalog: both tables are pure FIXTURES for
+ * exercising cache transitions, not data under test. A throwaway catalog on
+ * the same Stripe connection has identical contents and sync times, and
+ * caches are per-catalog, so F is unaffected.
  */
 async function runCacheManagement(ctx) {
   let cacheId = null;
+  // Everything below caches into THIS, never PEAKA_CATALOG_ID.
+  let catalogId = null;
+
+  await step("provision an isolated catalog", async () => {
+    const name = `e2e-auto-cachemgmt-${ctx.runTag}`;
+    const conn = await ctx.client.createConnection({
+      name,
+      type: "stripe",
+      credential: { token: ctx.stripeToken },
+    });
+    assertStatus(conn, 200, "createConnection (cache-management catalog)");
+    ctx.createdConnectionIds.push(conn.body.id);
+
+    const cat = await ctx.client.createCatalog({ name, connectionId: conn.body.id });
+    assertStatus(cat, 200, "createCatalog (cache-management catalog)");
+    assert(cat.body && cat.body.id, "Expected a catalog id in the response");
+    catalogId = cat.body.id;
+    ctx.createdCatalogIds.push(catalogId);
+
+    // Guards against silently falling back to the shared catalog, which is
+    // the exact regression this change exists to prevent.
+    assert(
+      String(catalogId) !== String(ctx.catalogId),
+      "The cache-management catalog must never be the shared PEAKA_CATALOG_ID"
+    );
+    console.log(`caching into throwaway catalog ${catalogId} (not the shared ${ctx.catalogId})`);
+  });
 
   await step("create a cache on a fast-syncing table", async () => {
     const res = await ctx.client.createCache({
-      catalogId: ctx.catalogId,
+      catalogId,
       schemaName: ctx.schemaName,
       tableName: FIXTURE_TABLE,
     });
@@ -49,7 +87,7 @@ async function runCacheManagement(ctx) {
     assertStatus(res, 200, "getCacheSettings");
     assertEqual(res.body.id, cacheId, "cache id");
     assertEqual(res.body.tableName, FIXTURE_TABLE, "cache tableName");
-    assertEqual(String(res.body.catalogId), String(ctx.catalogId), "cache catalogId");
+    assertEqual(String(res.body.catalogId), String(catalogId), "cache catalogId");
   });
 
   // Schedules are the one part of a cache that's mutable after creation.
@@ -130,7 +168,7 @@ async function runCacheManagement(ctx) {
   });
 
   await step("catalog-wide cache statuses include this cache", async () => {
-    const res = await ctx.client.getAllCacheStatusesOfCatalog(ctx.catalogId);
+    const res = await ctx.client.getAllCacheStatusesOfCatalog(catalogId);
     assertStatus(res, 200, "getAllCacheStatusesOfCatalog");
     assert(Array.isArray(res.body), "Expected an array of cache statuses");
     assert(
@@ -146,7 +184,7 @@ async function runCacheManagement(ctx) {
   // If it starts returning 200, this logs and the assertion still passes -
   // tighten it to [200] at that point.
   await step("schema-wide cache statuses (known 500)", async () => {
-    const res = await ctx.client.getAllCacheStatusesOfSchema(ctx.catalogId, ctx.schemaName);
+    const res = await ctx.client.getAllCacheStatusesOfSchema(catalogId, ctx.schemaName);
     if (res.status === 500) {
       console.log(
         "note: getAllCacheStatusesOfSchema returned 500 - confirmed, still-broken behaviour. " +
@@ -219,7 +257,7 @@ async function runCacheManagement(ctx) {
 
   await step("batch cache creation reports per-item results", async () => {
     const res = await ctx.client.createCacheBatch([
-      { catalogId: ctx.catalogId, schemaName: ctx.schemaName, tableName: BATCH_TABLE },
+      { catalogId, schemaName: ctx.schemaName, tableName: BATCH_TABLE },
     ]);
     assertStatus(res, 200, "createCacheBatch");
     assert(Array.isArray(res.body), `Expected an array of per-item results, got: ${JSON.stringify(res.body).slice(0, 200)}`);
@@ -238,7 +276,7 @@ async function runCacheManagement(ctx) {
     assertStatus(res, 200, "deleteCache");
     ctx.createdCacheIds = ctx.createdCacheIds.filter((id) => id !== cacheId);
 
-    const isCached = await ctx.client.isTableCached(ctx.catalogId, ctx.schemaName, FIXTURE_TABLE);
+    const isCached = await ctx.client.isTableCached(catalogId, ctx.schemaName, FIXTURE_TABLE);
     assertStatus(isCached, 200, "isTableCached after delete");
     assertEqual(isCached.body.isCached, false, `${FIXTURE_TABLE} isCached after its cache was deleted`);
   });

@@ -182,6 +182,7 @@ module.exports = {
       name: "M: Cache Management Endpoints",
       category: "Cache",
       steps: [
+        "provision an isolated catalog",
         "create a cache on a fast-syncing table",
         "cache reaches a completed sync",
         "read cache settings",

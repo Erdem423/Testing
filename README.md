@@ -302,6 +302,31 @@ Three genuine product-behavior findings from real testing against a live Peaka p
 
    Also found while investigating: the documented schema-level cache-status endpoint (`GET /data/projects/{projectId}/catalog/{catalogId}/schema/{schemaName}/cache/status`) returns **`500 Internal Server Error`** rather than a list of statuses.
 
+### ⚠️ Deleting a cache can permanently break a table (encountered 2026-07-31)
+
+**The most serious bug found so far, and it was hit by ordinary use — not by the deliberate race tests.**
+
+After many routine cache create/delete cycles (`C` creates and deletes four caches every run), the shared catalog's `invoices` table entered a state it cannot leave:
+
+| Probe | Result |
+|---|---|
+| `isTableCached(invoices)` | **`true`** |
+| `getAllCacheStatusesOfProject` | **0 caches** |
+| `getAllCacheStatusesOfCatalog` | **0 caches** |
+| Live `SELECT` on `invoices` | **`400`** — `Table 'peaka.bitable.tableacc15ada…' does not exist` |
+| `createCache(invoices)` | **`400`** — `Cannot create a table on a non-empty location: s3a://schemamapper…` |
+| `createCacheBatch(invoices)` | `success: false`, same Iceberg error |
+
+Peaka believes the table is cached, exposes no cache to delete, refuses to re-cache it, and routes queries to an Iceberg table that no longer exists. **The table is unreachable through Peaka.**
+
+The damage is confined to that one table in that one catalog — `customers`, `charges`, `subscriptions`, `refunds` and `transfers` all query fine, and `invoices` caches perfectly in a *freshly created* catalog, so Stripe and the connector are healthy.
+
+**No API-side recovery exists.** Tried and failed: metadata refresh (no effect, and the refresh itself never reached a terminal state in 80s), catalog- and project-level status listings (both empty), `createCache`, and `createCacheBatch`. Repair requires Peaka Studio or Peaka support.
+
+This is the orphaned-cache scenario `CONCURRENCY-SPEC.md` gates Tier 2 #4 behind an opt-in to avoid — *"can strand a cache that no endpoint enumerates"*. It turned out not to need the risky test at all. The most likely trigger is a cache delete interrupted mid-sync: a dashboard server died during a run earlier the same day, leaving four orphaned caches that were then deleted manually.
+
+**Worth reporting upstream as:** cache deletion can leave a catalog's table pointing at a dropped Iceberg table, breaking both reads and re-caching, with `isCached` still reporting `true` and no API handle to clear it.
+
 ### Smaller API quirks found while covering the base endpoints
 
 None of these are severe on their own, but each one silently breaks naive client code, and several
