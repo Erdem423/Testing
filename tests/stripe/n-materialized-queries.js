@@ -45,8 +45,13 @@ async function runMaterializedQueries(ctx) {
    * run actually starts. Polling for "any terminal status" right after
    * triggering a refresh therefore returns the stale value immediately - it
    * caught this test out once, reporting CANCELED as the "result" of a
-   * refresh that hadn't begun. Callers that just triggered something should
-   * wait for the specific status they expect, not merely for terminality.
+   * refresh that hadn't begun.
+   *
+   * Waiting for a specific STATUS only half-solves it, since the stale value
+   * may already be the one you're waiting for. `accept` therefore receives the
+   * whole body as its second argument, so callers that just triggered
+   * something can require evidence of a NEW execution - see the recovery step,
+   * which compares lastExecutionStartTime.
    */
   async function pollStatus(label, accept = (s) => TERMINAL.includes(s)) {
     let last = null;
@@ -54,7 +59,7 @@ async function runMaterializedQueries(ctx) {
       const res = await ctx.client.getMaterializedQueryStatus(materializedId);
       assertStatus(res, 200, `getMaterializedQueryStatus (${label})`);
       last = res.body;
-      if (accept(String(res.body.status).toUpperCase())) return last;
+      if (accept(String(res.body.status).toUpperCase(), res.body)) return last;
       await sleep(POLL_INTERVAL_MS);
     }
     throw new Error(
@@ -159,14 +164,39 @@ async function runMaterializedQueries(ctx) {
     // The assertion that matters: a refresh brings it back to COMPLETED
     // regardless of how the cancel left it.
     //
-    // Waits for COMPLETED specifically rather than "any terminal status" -
-    // otherwise the stale CANCELED from the cancel above satisfies the poll
-    // instantly and this asserts nothing. FAILED is accepted as a stopping
-    // point too so a genuine failure surfaces as itself rather than a timeout.
+    // KEYS ON THE EXECUTION TIMESTAMP, NOT THE STATUS, and that distinction is
+    // load-bearing. The status endpoint keeps reporting the PREVIOUS terminal
+    // status until the newly triggered run starts, so any status-based poll
+    // can be satisfied by a stale value the instant it is called.
+    //
+    // An earlier version waited for "COMPLETED or FAILED" to avoid being
+    // satisfied by the stale CANCELED - but that only closed half the hole.
+    // The step above settles at CANCELED *or* COMPLETED depending on who wins
+    // the race, and COMPLETED is the more common outcome. Whenever it landed
+    // there, this poll returned immediately on the stale COMPLETED and the
+    // assertion verified nothing at all.
+    //
+    // lastExecutionStartTime changes only when a genuinely new execution
+    // begins, so requiring BOTH a changed timestamp AND a terminal status
+    // proves the recovery refresh actually ran, whatever preceded it.
+    const before = await ctx.client.getMaterializedQueryStatus(materializedId);
+    assertStatus(before, 200, "getMaterializedQueryStatus (before recovery)");
+    const priorExecutionStart = before.body.lastExecutionStartTime;
+
     const res = await ctx.client.refreshMaterializedQuery(materializedId);
     assertStatus(res, 200, "refreshMaterializedQuery (recovery)");
-    const last = await pollStatus("recovery refresh", (s) => s === "COMPLETED" || s === "FAILED");
+
+    const last = await pollStatus(
+      "recovery refresh",
+      (s, body) => (s === "COMPLETED" || s === "FAILED") && body.lastExecutionStartTime !== priorExecutionStart
+    );
     assertEqual(String(last.status).toUpperCase(), "COMPLETED", "status after recovering from a cancel");
+    assert(
+      last.lastExecutionStartTime !== priorExecutionStart,
+      `The recovery refresh never produced a new execution - lastExecutionStartTime is still ` +
+        `${priorExecutionStart}, so this step observed a stale status rather than a real refresh.`
+    );
+    console.log(`recovery refresh ran: execution start moved ${priorExecutionStart} -> ${last.lastExecutionStartTime}`);
   });
 
   // inputQueryRefId materializes an EXISTING saved query rather than inline
