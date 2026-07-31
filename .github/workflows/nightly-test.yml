@@ -35,18 +35,12 @@ jobs:
 
       - run: npm ci
 
-      # Defensive: if this binary was committed from a Windows machine, the
-      # executable bit may not have survived (Windows doesn't track Unix
-      # permissions the same way) - ensure it's executable regardless of
-      # what git recorded, since CI runs on ubuntu-latest.
-      - run: chmod +x tools/pict/pict-linux
-
       # ---- Attempt 1 ----
       # Deliberately NOT using jest.retryTimes() here - that discards the
       # first failure's data entirely and reports only the last attempt,
       # which would silently hide exactly the kind of real, intermittent
-      # product bugs this suite exists to catch (see the README's "Known
-      # gaps" for real examples this suite has already found). Instead: run
+      # product bugs this suite exists to catch (see FINDINGS.md for real
+      # examples this suite has already found). Instead: run
       # once, and if it fails, run again as a SEPARATE, fully visible step -
       # both attempts' results get uploaded as artifacts either way.
       - name: Run tests (attempt 1)

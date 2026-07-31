@@ -1,3 +1,12 @@
 node_modules/
 .env
 test-results/
+
+# Designs that were explored but never wired into the suite. Kept locally,
+# untracked so a clone stays free of code nothing calls. See git history.
+PAIRWISE-SPEC.md
+STATE-MACHINE-SPEC.md
+model.txt
+helpers/pairwiseGenerate.js
+helpers/pictWrapper.js
+tools/pict/

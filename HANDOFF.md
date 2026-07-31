@@ -14,8 +14,10 @@ A Jest test suite that validates Peaka's Stripe connector against the **real** P
 
 ## 2. Current architecture (and why it's shaped this way)
 
-### Four consolidated tests, not many small ones
-`A: Connection Setup`, `B: Catalog & Schema Discovery`, `C: Data Correctness & Cache Behavior`, `F: Error Handling` — each is ONE Jest `test.concurrent()` block that internally runs several named `step(...)` calls in sequence.
+### Consolidated tests, not many small ones
+`B: Catalog & Schema Discovery`, `C: Data Correctness & Cache Behavior`, `F: Error Handling` — each is ONE Jest `test.concurrent()` block that internally runs several named `step(...)` calls in sequence.
+
+**`A: Connection Setup` was merged into `G: Connection Endpoints`** (2026-07-31). Both covered connections, and A's "create a valid connection" step asserted a strict subset of G's first step. Only A's invalid-token check was unique, so it moved to G and A was deleted.
 
 **`C` and `D` were later merged into one test** (2026-07-29). They interacted: caching a table the other was querying live made the live count return 0, which `D` worked around by avoiding `C`'s tables. Merged, the race is impossible and the live-vs-cached difference becomes the subject of the test — every correctness assertion runs twice, uncached then cached, with the cache lifecycle in between. 20 steps, ~74s. See `tests/stripe/c-data-and-cache.js`.
 
@@ -78,31 +80,33 @@ helpers/
   env.js                   - .env loader + credential validation (detects placeholder values too)
   cleanup.js                - deletes tracked resources (cache -> catalog -> connection order)
   resolveCatalogName.js     - resolves ctx.catalogName (live getCatalog call + .env fallback)
-  pollCacheUntilComplete.js - polls a cache's status until done/failed, shared by D and C
-  pairwiseGenerate.js       - homemade pairwise-combination generator (JS reimplementation of PICT's algorithm)
-  pictWrapper.js            - wraps the REAL Microsoft PICT binary (see section 5)
+  pollCacheUntilComplete.js - polls a cache's status until done/failed
+  cacheExecution.js         - reads a cache's true current status (see FINDINGS.md)
+  buildCtx.js               - builds each scenario's isolated context
+  stepReporter.js           - emits live step events to the dashboard (no-op under npm test)
+  raceWindow.js             - timing primitives for the concurrency suite
+  racePreflight.js          - refuses to start the races if another run is active
 
 tests/stripe/
   meta.js                   - connector metadata (displayName, icon, scenarios[].steps) - KEEP
                               IN SYNC with actual step() calls in the files below (this has
                               already drifted stale twice - see section 7)
-  a-connection-setup.js      - A: create/reject Stripe connections (2 steps)
   b-catalog-schema.js        - B: catalog -> schema -> tables -> cache flags -> columns (8 steps)
   c-data-and-cache.js        - C: uncached checks -> cache all 4 tables -> same checks cached ->
                                live-vs-cached comparison -> cache edge cases (20 steps)
-  g-connections.js           - G: connection CRUD + connector config + credential masking (8)
+  g-connections.js           - G: connection CRUD + connector config + credential masking (9)
   h-catalogs.js              - H: catalog CRUD + search + table statistics (6)
   i-queries.js               - I: saved-query CRUD + execute by id/name + transpile (8)
   j-internal-tables.js       - J: Peaka table + column CRUD (6)
   k-exports.js               - K: async CSV export create/poll/read/list/cancel (6)
   l-metadata.js              - L: metadata refresh + status, on its own catalog (5)
   m-cache-management.js      - M: settings, batch, all-statuses x3, history, trigger/cancel (17)
-  n-materialized-queries.js  - N: materialized create/status/refresh/cancel/recover (8)
+  n-materialized-queries.js  - N: materialized create/status/refresh/cancel/recover (9)
                                G-N each have their own jest/stripe/<name>.test.js
   f-error-handling.js        - F: non-existent table, pagination (3 steps)
 
 jest/
-  stripe/connector.test.js  - the 5 test.concurrent() blocks, buildFreshCtx(), afterAll cleanup
+  stripe/connector.test.js  - the 3 test.concurrent() blocks (B, C, F), buildFreshCtx(), afterAll cleanup
   browserReporter.js         - custom Jest reporter streaming results onto reporterBus
   reporterBus.js             - shared EventEmitter, browserReporter.js + server.js both use it
 
@@ -110,24 +114,20 @@ public/
   index.html, styles.css, app.js - web dashboard frontend (see section 8 for design provenance)
 
 server.js                    - Express server, calls Jest's real runCLI(), dynamic folder discovery
-tools/pict/
-  pict.exe                   - REAL Microsoft PICT binary, official Windows release v3.7.4
-  pict-linux                 - REAL Microsoft PICT, built from source, for CI (ubuntu-latest)
 ```
 
 ---
 
-## 5. The two pairwise-generation implementations (both real, both kept deliberately)
+## 5. Pairwise generation (removed from the repo)
 
-- **`helpers/pairwiseGenerate.js`** — a from-scratch greedy pairwise-covering algorithm in plain JS, zero dependencies. Verified: on the project's real dimensions (Table × CacheSchedule × QueryFormat × QueryMechanism — 162 full combinations), produces 18 rows, independently confirmed to cover all 81 required pairs. Benchmarked against a known published Microsoft PICT example (5 binary params, published result 7 rows) — this implementation got 6, comparable quality.
+Two combinatorial generators were built — a from-scratch JS implementation and a wrapper around the
+real Microsoft PICT binary — but **neither was ever wired into a test scenario**, so nothing consumed
+their output. They were untracked on 2026-07-31 along with `PAIRWISE-SPEC.md` and
+`STATE-MACHINE-SPEC.md`, and remain in git history if they are ever wanted back.
 
-- **`helpers/pictWrapper.js`** — shells out to the **actual** Microsoft PICT binary (not a reimplementation). Built by cloning `github.com/microsoft/pict`, running `make pict` for the Linux binary, and downloading the official pre-built `pict.exe` from the GitHub releases page for Windows. Auto-detects `process.platform` to pick the right binary. On the same real dimensions, the actual tool produces 21 rows (vs. the homemade version's 18) — both fully valid, different algorithms land on different but equally-correct minimal-ish sets.
-
-**Neither is yet wired into an actual test scenario.** Both generate lists of combinations — nothing in `tests/stripe/*.js` currently *uses* either generator's output to drive real `createCache`/`executeQuery` calls against Peaka. That's the clear, well-scoped next step if picking this back up.
-
-**Real bug found and fixed while building `pairwiseGenerate.js`**: with only one parameter, there are no *pairs* possible at all, so the original version returned zero rows even though you'd obviously want each value tested at least once. Fixed with a fallback pass ensuring every individual value appears in at least one row, regardless of parameter count.
-
-**Real gotcha hit while packaging the PICT binaries**: the destination folder used for building the final zip turned out to be a FUSE-mounted remote filesystem that silently doesn't honor `chmod` — the Linux binary's executable bit kept disappearing. Fixed by building the entire zip in a normal filesystem first, then copying only the *finished* zip file over (a zip's internal permission metadata survives independent of the outer filesystem). If you hit "permission denied" running `pict-linux` after extracting a zip, re-`chmod +x` it — some zip tools/OSes don't reliably preserve the Unix executable bit across platforms (Windows especially, since it has no native concept of the bit at all).
+`STATE-MACHINE-SPEC.md` went the same way for a stronger reason: its central argument was that the
+duplicate-create `500` had never been reproduced and nothing explored sequencing. The concurrency
+suite now reproduces it deterministically in Tier 1.1, so `CONCURRENCY-SPEC.md` supersedes it.
 
 ---
 
@@ -139,7 +139,7 @@ tools/pict/
 
 **Required GitHub secrets** (see README for the full table): `PEAKA_API_KEY`, `PEAKA_PROJECT_ID`, `STRIPE_TEST_TOKEN`, `PEAKA_CATALOG_ID`, `PEAKA_SCHEMA_NAME`, `NUM_CUSTOMERS`, `EXPECTED_CUSTOMER_COUNT_NON_CACHE`, optionally `SLACK_WEBHOOK_URL`.
 
-Dedicated unit tests (`jest/unit/`, covering `helpers/pairwiseGenerate.js` and `helpers/pictWrapper.js`) were deliberately removed — this suite is scoped to the credentialed integration tests only now, so there's no separate fast/free tier to split CI around.
+Dedicated unit tests (`jest/unit/`) were deliberately removed — this suite is scoped to the credentialed integration tests only now, so there's no separate fast/free tier to split CI around.
 
 ---
 
@@ -162,7 +162,7 @@ The current 3-pane layout (folder tree in the left sidebar / center results list
 
 ## 9. Clear next steps, roughly in order of natural progression
 
-1. **Wire the pairwise generators into an actual test** — pick either `pairwiseGenerate.js` or `pictWrapper.js`, generate real combinations of `Table`/`CacheSchedule`/`QueryFormat`/`QueryMechanism`, and write a new step (in `tests/stripe/` or a new category) that runs a real `createCache`/`executeQuery` for each generated row and asserts a general property (e.g. "never a raw 500"). Note: their old dedicated unit tests were removed, so correctness would need to come from this new scenario's own assertions.
+1. **Tighten the remaining hedged status assertions** — roughly a dozen `assertStatusIn([...])` calls in `tests/stripe/*.js` accept a set where a single value was measured. See FINDINGS.md's "bugs in this test suite" section: a hedge of exactly this shape concealed a broken wait for as long as the step existed.
 2. **A second connector** (Mongo/Supabase) — the folder-discovery architecture is ready for this with zero core changes; would be the first real test of whether the "generic" design actually holds up.
 3. **Real per-step live tracking** in the web dashboard, if the request/response detail view becomes valuable enough to justify instrumenting `tests/stripe/*.js` further.
 4. Revisit the "interaction testing" ideas discussed at length (deliberately combining operations that touch the same resource, beyond the one `C`/`D` collision already found and fixed) — genuinely promising territory, but explicitly *not yet built*, since the discussion concluded that hand-picking a small, targeted "conflict matrix" of plausible pairs is more tractable than exhaustive or fully-randomized concurrent combination testing given real API rate limits and cost.

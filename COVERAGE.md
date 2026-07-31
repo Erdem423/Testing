@@ -3,9 +3,12 @@
 Maps what this repo actually tests today against the 21-scenario E2E spec. Written by reading the
 test sources directly (`tests/stripe/*.js`), not from the docs, since those have drifted before.
 
-**Current suite:** 12 scenarios / 97 steps. `A` (2), `B` (8), `C` (20), `F` (3) share one file as
-`test.concurrent()` blocks; `G` (8), `H` (6), `I` (8), `J` (6), `K` (6), `L` (5), `M` (17), `N` (8) each
+**Current suite:** 11 scenarios / 97 steps. `B` (8), `C` (20), `F` (3) share one file as
+`test.concurrent()` blocks; `G` (9), `H` (6), `I` (8), `J` (6), `K` (6), `L` (5), `M` (17), `N` (9) each
 have their own file and run in separate Jest workers.
+
+`A: Connection Setup` was merged into `G` on 2026-07-31 — both covered connections, and A's create step
+asserted a strict subset of G's. Only its invalid-token check was unique, which is why `G` is now 9.
 
 ## Scoreboard
 
