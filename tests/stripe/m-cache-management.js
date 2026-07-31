@@ -247,7 +247,48 @@ async function runCacheManagement(ctx) {
     assertStatus(res, 200, "triggerFullRefresh");
   });
 
+  // WAITS FOR THE EXECUTION RECORD BEFORE CANCELLING, and that wait is the
+  // whole point of this step's shape.
+  //
+  // Cancelling immediately after the trigger made this step flake under load
+  // with a genuine server error:
+  //   500 NullPointerException - "Cannot invoke CacheExecutionInfo.getStatus()
+  //   because getLastFullRefreshCacheExecution() is null"
+  //
+  // Peaka's cancel handler dereferences the full-refresh execution record
+  // without a null check, and that record is created ASYNCHRONOUSLY after the
+  // trigger returns 200. Measured: triggerFullRefresh takes ~2.3s to return
+  // and the record appears ~300ms later, so there is a narrow window in which
+  // cancel NPEs. At normal API speed the trigger is slow enough to cover it;
+  // under load the gap widens and the cancel lands inside it. That is how M
+  // came to fail at 124s in a full-suite run while passing at 21s alone.
+  //
+  // Polling until the record exists removes the null precondition entirely, so
+  // this tests CANCEL rather than racing record creation. The accepted
+  // statuses are deliberately unchanged - a 5xx must still fail the run. This
+  // stops provoking the bug; it does not hide it.
   await step("cancel the full refresh (404 if it already finished)", async () => {
+    const TERMINAL = ["COMPLETED", "FAILED", "CANCELLED", "CANCELED"];
+    let sawRecord = false;
+    for (let attempt = 1; attempt <= 40; attempt++) {
+      const status = await ctx.client.getCacheStatus(cacheId);
+      assertStatus(status, 200, "getCacheStatus (waiting for the full-refresh record)");
+      const exec = status.body.lastFullRefreshCacheExecution;
+      if (exec) {
+        sawRecord = true;
+        // Already finished is fine - cancel then legitimately returns 404.
+        if (TERMINAL.includes(String(exec.status).toUpperCase())) break;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!sawRecord) {
+      console.log(
+        "note: no full-refresh execution record appeared within ~10s. Cancelling anyway - if this returns " +
+          "500 it is the known NullPointerException on a null execution record, not a test bug."
+      );
+    }
+
     const res = await ctx.client.cancelFullRefresh(cacheId);
     assertStatusIn(res, [200, 404], "cancelFullRefresh");
     if (res.status === 404) {

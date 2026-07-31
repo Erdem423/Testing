@@ -331,6 +331,22 @@ This is the orphaned-cache scenario `CONCURRENCY-SPEC.md` gates Tier 2 #4 behind
 
 **So it is detected rather than reproduced.** `C`'s first step now cross-checks `isTableCached` against the catalog's cache listing. A table reporting `isCached: true` while **no cache is listed** is a contradiction Peaka should never produce, and it is this corruption's exact signature. The check costs one extra API call and fails in **3.6s with a diagnosis**, where previously the problem surfaced ~48s later as an opaque Iceberg error several steps removed from the cause. Verified both ways: it fires on the real corrupted `invoices`, and stays quiet when a legitimate cache exists.
 
+### `cancelFullRefresh` returns `500` on a null execution record
+
+A fourth confirmed server-side `500`, found when `M` failed during a full-suite run:
+
+```
+500 NullPointerException
+"Cannot invoke CacheExecutionInfo.getStatus() because
+ getLastFullRefreshCacheExecution() is null"
+```
+
+Peaka's cancel handler dereferences the full-refresh execution record without a null check, and that record is created **asynchronously after the trigger returns `200`**. Measured: `triggerFullRefresh` takes ~2.3s to return and the record appears ~300ms later, so there is a narrow window in which cancelling NPEs.
+
+At normal API speed the trigger is slow enough to cover the gap — which is why `M` passed at 21s in isolation and failed at 124s inside a loaded full-suite run. It could not be reproduced on demand afterwards, including against a cache whose `lastFullRefreshCacheExecution` was verified `null` beforehand; the window only widens under load.
+
+`M` now polls until the execution record exists before cancelling, which removes the null precondition entirely. The accepted statuses are deliberately unchanged (`[200, 404]`) — a `5xx` still fails the run. The test stops *provoking* the bug without hiding it.
+
 ### Smaller API quirks found while covering the base endpoints
 
 None of these are severe on their own, but each one silently breaks naive client code, and several
