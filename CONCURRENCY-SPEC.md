@@ -291,6 +291,39 @@ never return an *empty* table list mid-refresh) is the right one — there just 
 all, which says the API handles read concurrency comfortably. It also means the instructor's scenario 19
 passes trivially rather than revealing anything — worth knowing before treating it as a meaningful test.
 
+### Re-verified 2026-08-03, after the `cacheExecution` change
+
+`helpers/cacheExecution.js` made settling stricter — the most recent execution record *and* the top-level
+status must both be terminal. Tier 1 was re-run at the time; Tiers 2 and 3 were not, leaving the only
+affected call (`waitForSettled` in 3.8b) unverified. Both re-run clean:
+
+| Check | Result |
+|---|---|
+| Tier 2 | **PASS**, 24s |
+| Tier 3 | **PASS**, 109s (was ~48s; the metadata refreshes are slower on a fresh catalog) |
+| 3.8b `waitForSettled` under the stricter check | Settled normally — no regression |
+| 3.10 20 parallel queries | All `200` in 10.3s, slower than the original 2.1s but no failures |
+
+**Tier 2 never depended on the change at all** — it imported `waitForSettled` without ever calling it.
+That dead import has been removed.
+
+**`duringExport` enters its window, so 2.6 is a real race.** This was an open question after Tier 1.6
+turned out to have been silently testing the idle path. Measured: `entered window: true, export status at
+fire: RUNNING`. The trap that caught 1.6 structurally cannot apply here — `duringExport` polls a *freshly
+created* export id, which has no previous run whose terminal status could linger, whereas a materialized
+query's status endpoint serves the prior terminal value until a new run starts.
+
+### 3.8b was writing to the shared catalog (fixed 2026-08-03)
+
+Found while re-verifying, and unrelated to the change above. 3.8b cached `customers` into
+**`PEAKA_CATALOG_ID`** — precisely the hazard Tier 1 was moved off. Any interruption between its create
+and delete leaves `customers` cached in the catalog `C` depends on, which is exactly what happened once
+when a dashboard server died mid-run and `C` then skipped its whole live phase.
+
+It also made this file's sibling claim in `tests/races/tier3.js` untrue: the header asserted Tier 3 could
+not disturb `B` and `C`, which held for the metadata steps and not for this one. 3.8b now uses the same
+`throwawayCatalog()` helper as the rest of the file and asserts the id is never the shared one.
+
 ## Across all three tiers
 
 Ten conflicts tested, **one bug found** — the duplicate-`createCache` `500`, which was already suspected and
