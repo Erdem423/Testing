@@ -15,12 +15,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * Two shape details that are easy to get wrong, both from the reference:
  *   - createQueryExport returns 202 (Accepted), NOT 200.
  *   - cancelExport returns 204, NOT 200, and is idempotent.
+ *
+ * NO STEP HERE GUARDS ON "the previous step failed", deliberately. helpers/step.js
+ * rethrows, so a scenario aborts at its first failing step and nothing after it
+ * runs - a guard for that case can never fire. Four such guards existed until
+ * 2026-08-03 and were removed: they encoded a false model of how step() behaves,
+ * and had anyone later wrapped step() in a try/catch they would have turned four
+ * steps into silent no-ops that still reported green.
+ *
+ * The way to make a later step safe is to ASSERT the thing it depends on in the
+ * step that produces it, which is what the id assertions below do.
  */
 async function runExports(ctx) {
   const displayName = `e2e-auto-export-query-${ctx.runTag}`;
   let queryId = null;
   let exportId = null;
-  let reachedTerminal = false;
 
   await step("create a query to export from", async () => {
     const res = await ctx.client.createQuery({
@@ -29,15 +38,16 @@ async function runExports(ctx) {
       queryType: "PLAIN",
     });
     assertStatus(res, 200, "createQuery (for export)");
+    // Asserted rather than assumed. Without this a 200 carrying no id left
+    // queryId undefined, the step still passed, and the rest of the scenario
+    // silently skipped itself - the one case the deleted guards actually
+    // caught, and one that deserves to fail loudly here instead.
+    assert(res.body && res.body.id, `Expected a query id in the createQuery response, got: ${JSON.stringify(res.body)}`);
     queryId = res.body.id;
     ctx.createdQueryIds.push(queryId);
   });
 
   await step("start a CSV export", async () => {
-    if (!queryId) {
-      console.log("skipped: no query to export (previous step failed)");
-      return;
-    }
     const res = await ctx.client.createQueryExport(queryId, { format: "CSV", limit: 100 });
     // 202 is the documented success code here; accept 200 too in case the
     // implementation differs from the reference.
@@ -47,11 +57,8 @@ async function runExports(ctx) {
   });
 
   await step("poll the export until it reaches a terminal state", async () => {
-    if (!exportId) {
-      console.log("skipped: no export job was started");
-      return;
-    }
     const TERMINAL = ["SUCCEEDED", "FAILED", "CANCELLED", "EXPIRED"];
+    let reachedTerminal = false;
     let last = null;
     for (let attempt = 1; attempt <= MAX_POLL_ATTEMPTS; attempt++) {
       const res = await ctx.client.getExport(exportId);
@@ -75,10 +82,6 @@ async function runExports(ctx) {
     );
   });
 
-  // No `if (!reachedTerminal) return` guard here, deliberately: the previous
-  // step already asserts the export reached SUCCEEDED, so this could only ever
-  // trigger in a state that step should have failed on. Skipping instead would
-  // mask a genuine regression in export completion behind a green step.
   await step("a succeeded export exposes downloadable files", async () => {
     const res = await ctx.client.getExport(exportId);
     assertStatus(res, 200, "getExport (files)");
@@ -89,10 +92,6 @@ async function runExports(ctx) {
   });
 
   await step("list exports includes this job", async () => {
-    if (!exportId) {
-      console.log("skipped: no export job was started");
-      return;
-    }
     const res = await ctx.client.listExports({ limit: 50 });
     assertStatus(res, 200, "listExports");
     assert(Array.isArray(res.body), "Expected an array of export jobs");
@@ -105,10 +104,6 @@ async function runExports(ctx) {
   // Cancelling an already-finished job is documented as idempotent, so this
   // is safe to run against the completed export rather than racing a live one.
   await step("cancel is accepted and idempotent", async () => {
-    if (!exportId) {
-      console.log("skipped: no export job was started");
-      return;
-    }
     const first = await ctx.client.cancelExport(exportId);
     assertStatusIn(first, [200, 204], "cancelExport");
     const second = await ctx.client.cancelExport(exportId);
