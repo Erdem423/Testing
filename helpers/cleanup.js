@@ -40,6 +40,17 @@ async function cleanup(ctx, log = console.log) {
     }
   }
 
+  // STRIPE FIRST, and deliberately before any Peaka resource.
+  //
+  // This is the only upstream state the suite creates, and it is the only
+  // leftover that does lasting damage: a stray customer permanently shifts the
+  // row counts C asserts against, whereas a leftover Peaka cache is merely
+  // debris. Running it first means a Stripe-side failure cannot prevent the
+  // Peaka cleanup below - deleteEach never throws.
+  if (ctx.stripe && ctx.createdStripeCustomerIds) {
+    await deleteEach(ctx.createdStripeCustomerIds, "stripe customer", (id) => ctx.stripe.deleteCustomer(id));
+  }
+
   for (const cacheId of [...ctx.createdCacheIds].reverse()) {
     try {
       const res = await ctx.client.deleteCache(cacheId);

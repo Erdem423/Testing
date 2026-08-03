@@ -1,5 +1,6 @@
 const { loadDotEnv, checkCredentials } = require("./env");
 const { PeakaClient } = require("./peakaClient");
+const { StripeClient } = require("./stripeClient");
 
 /**
  * Shared test-context builder.
@@ -35,6 +36,9 @@ function buildFreshCtx() {
 
   return {
     client: new PeakaClient({ apiKey, projectId }),
+    // The ONLY client that talks to Stripe directly. Used by o-data-freshness
+    // to add a row at the source; everything else reads through Peaka.
+    stripe: new StripeClient({ token: stripeToken }),
     projectId,
     stripeToken,
     catalogId,
@@ -50,6 +54,9 @@ function buildFreshCtx() {
     createdCacheIds: [],
     createdQueryIds: [],
     createdInternalTableNames: [],
+    // UPSTREAM resources, not Peaka ones. A leftover customer permanently
+    // shifts the counts C asserts against, so cleanup deletes these first.
+    createdStripeCustomerIds: [],
   };
 }
 
