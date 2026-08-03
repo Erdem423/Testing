@@ -54,6 +54,7 @@ module.exports = {
       steps: [
         "resolve catalog name",
         "data-correctness tables all start uncached",
+        "a SELECT returns the requested columns with correctly-shaped values",
         "live counts are capped at 100 on every table",
         "a live SELECT cannot return more than 100 rows",
         "live charge refund distribution is plausible",
@@ -80,6 +81,8 @@ module.exports = {
       steps: [
         "resolve catalog name",
         "querying a non-existent table returns a clean error",
+        "a non-existent schema is rejected by name",
+        "a non-existent column is rejected by name",
         "pagination via limit/offset returns non-overlapping pages",
       ],
     },
@@ -199,6 +202,24 @@ module.exports = {
         "cancel a full refresh with nothing running reports not-found",
         "batch cache creation reports per-item results",
         "delete the cache and confirm it is gone",
+      ],
+    },
+    {
+      // The only scenario that WRITES to Stripe. It creates a customer, proves
+      // a refresh makes it visible, then deletes it again. Long by nature:
+      // `customers` syncs in ~37s and this refreshes it up to three times.
+      name: "O: Data Freshness",
+      category: "Cache",
+      steps: [
+        "provision an isolated catalog",
+        "cache the customers table and record a baseline count",
+        "create a new customer directly in Stripe",
+        "the new customer is not visible before a refresh",
+        "an incremental update is tried first",
+        "a full refresh is tried if incremental missed it",
+        "a source row becomes visible after refreshing",
+        "deleting the customer upstream is reflected after a refresh",
+        "delete the cache",
       ],
     },
   ],

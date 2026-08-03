@@ -1,4 +1,4 @@
-const { assertStatus, assertStatusIn, assert, assertApprox } = require("../../helpers/assert");
+const { assertStatus, assertStatusIn, assert, assertApprox, assertEqual } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
 const { resolveCatalogName } = require("../../helpers/resolveCatalogName");
 const { pollCacheUntilComplete } = require("../../helpers/pollCacheUntilComplete");
@@ -57,6 +57,11 @@ const { pollCacheUntilComplete } = require("../../helpers/pollCacheUntilComplete
 // this test caches. All four verified to cache cleanly (~37-50s in parallel).
 const DC_TABLES = ["customers", "charges", "subscriptions", "invoices"];
 
+// Missing seed data used to SKIP these checks, which let the scenario report
+// green while verifying nothing. It is a precondition failure instead.
+const SEED_HINT =
+  "An empty sandbox is a precondition failure, not a pass - see the README's Prerequisites. Skipping here would let this scenario report green while verifying nothing.";
+
 function qname(ctx, tableName) {
   return `"${ctx.catalogName}"."${ctx.schemaName}"."${tableName}"`;
 }
@@ -98,12 +103,71 @@ async function fetchIds(ctx, tableName, limit) {
   return res.body.data.map((r) => r.id);
 }
 
-/** Field-level spot check; returns the row so both passes can be compared. */
-async function fetchSpotCheckCustomer(ctx) {
-  const sql = `SELECT name, email FROM ${qname(ctx, "customers")} WHERE name = 'Test Customer 1' LIMIT 1`;
+/**
+ * The spot-check target, DERIVED rather than hardcoded.
+ *
+ * This used to look for `Test Customer 1` by name, and never found it. Live
+ * reads return only the first 100 rows and Stripe lists newest-first, so the
+ * window holds customers 500 down to 401 - customer 1 sits 400 rows outside it
+ * and is unreachable live by construction. The step reported
+ * "seed script may use a different naming pattern" and skipped, blaming the
+ * seed data for this suite's own documented cap.
+ *
+ * Worse, it took the cached half down with it: `liveSpotCheck` stayed null, so
+ * the cached step's comparison sat behind `if (liveSpotCheck)` and never ran.
+ * The one assertion proving that caching does not alter field VALUES had never
+ * executed.
+ *
+ * Taking whatever row comes back first makes the target inherently reachable -
+ * it is chosen from inside the live window rather than hoped to be in it.
+ */
+async function fetchFirstCustomer(ctx) {
+  const sql = `SELECT name, email FROM ${qname(ctx, "customers")} LIMIT 1`;
   const res = await ctx.client.executeQuery({ statement: sql }, "SIMPLE");
-  assertStatus(res, 200, "spot check customer");
+  assertStatus(res, 200, "spot check target");
+  assert(
+    res.body.data.length > 0,
+    "No customers at all in the catalog. This suite needs a seeded Stripe sandbox - see the README's " +
+      "Prerequisites. Failing rather than skipping: an empty sandbox means the assertions below would " +
+      "verify nothing while still reporting green."
+  );
+  return res.body.data[0];
+}
+
+/** Looks up one customer by exact name. Returns the row, or null if absent. */
+async function fetchCustomerByName(ctx, name) {
+  const sql = `SELECT name, email FROM ${qname(ctx, "customers")} WHERE name = '${name}' LIMIT 1`;
+  const res = await ctx.client.executeQuery({ statement: sql }, "SIMPLE");
+  assertStatus(res, 200, `spot check customer '${name}'`);
   return res.body.data.length > 0 ? res.body.data[0] : null;
+}
+
+/**
+ * Checks the email belongs to THIS customer rather than merely being present.
+ *
+ * Seeded emails look like `test.customer500.<timestamp>@example.com`, so the
+ * number in the name must appear in the address. That catches rows being
+ * stitched together wrongly, which a "the email is non-empty" check would not.
+ *
+ * The convention check stands down for names that don't match the seed pattern,
+ * but the caller's live-vs-cached comparison always runs - the conditional is on
+ * NAMING, never on data being present.
+ */
+function assertEmailBelongsTo(row, label) {
+  assert(
+    typeof row.email === "string" && row.email.includes("@"),
+    `Expected ${label} to have an email address, got: ${JSON.stringify(row.email)}`
+  );
+  const match = /^Test Customer (\d+)$/.exec(row.name || "");
+  if (!match) {
+    console.log(`note: '${row.name}' doesn't match the seed naming pattern, so the email convention check is skipped`);
+    return;
+  }
+  assert(
+    row.email.includes(`customer${match[1]}.`),
+    `Email does not belong to ${label}: name '${row.name}' should map to an address containing ` +
+      `'customer${match[1]}.', got '${row.email}'`
+  );
 }
 
 async function runDataAndCache(ctx) {
@@ -213,13 +277,70 @@ async function runDataAndCache(ctx) {
     }
   });
 
+  // VALUE-SHAPE VALIDATION, which nothing in this suite did before. Every other
+  // assertion here is about how MANY rows come back; this is the only one about
+  // whether the rows are shaped as asked for.
+  //
+  // DELIBERATELY NOT BEHIND skipLivePhase. Shape does not depend on whether
+  // anything is cached, and gating it would recreate the silent-skip problem
+  // that already affects the field-level spot check below - a step that reports
+  // green having verified nothing.
+  //
+  // LIMIT 3 keeps this far under the 100-row cap, so it needs no cache and says
+  // nothing about the cap either way.
+  await step("a SELECT returns the requested columns with correctly-shaped values", async () => {
+    const sql = `SELECT id, amount FROM ${qname(ctx, "charges")} LIMIT 3`;
+    const res = await ctx.client.executeQuery({ statement: sql }, "SIMPLE");
+    assertStatus(res, 200, "SELECT id, amount FROM charges");
+
+    // Names AND order. A connector that silently reordered or renamed columns
+    // would still return plausible-looking data.
+    const returned = (res.body.columns || []).map((c) => c.columnName);
+    assertEqual(
+      JSON.stringify(returned),
+      JSON.stringify(["id", "amount"]),
+      "returned column names (order matters)"
+    );
+
+    assert(res.body.data.length > 0, "Expected at least one charge row - has the seed script run?");
+    for (const row of res.body.data) {
+      // Stripe ids are prefixed per object type; `ch_` is the charge prefix.
+      // This catches a join or routing bug returning the wrong table's rows,
+      // which a count-based assertion never would.
+      assert(
+        typeof row.id === "string" && /^ch_/.test(row.id),
+        `Expected charge ids to start with 'ch_', got: ${JSON.stringify(row.id)}`
+      );
+      // Exactly the requested keys - no more. A silently widened response is a
+      // contract change worth noticing.
+      assertEqual(
+        JSON.stringify(Object.keys(row).sort()),
+        JSON.stringify(["amount", "id"]),
+        "returned row keys"
+      );
+      // PINS A KNOWN QUIRK: Peaka returns numeric columns as STRINGS ("15000",
+      // not 15000). Any caller doing arithmetic on this gets string
+      // concatenation instead. Asserted rather than tolerated so that if Peaka
+      // starts returning real numbers this step goes red and someone updates
+      // the finding - the same deliberate passing-regression-test approach used
+      // for the 100-row cap above. See FINDINGS.md.
+      assert(
+        typeof row.amount === "string",
+        `Expected 'amount' to come back as a string (Peaka's documented-here quirk), got ` +
+          `${typeof row.amount}: ${JSON.stringify(row.amount)}. If Peaka now returns numbers, that is an ` +
+          `improvement - update this assertion and FINDINGS.md rather than loosening it.`
+      );
+    }
+    console.log(`shape check: columns [${returned.join(", ")}], ids prefixed 'ch_', amount typed as string`);
+  });
+
   await step("live counts are capped at 100 on every table", async () => {
     if (skipLivePhase) {
       console.log("skipped: tables were already cached (see previous step)");
       return;
     }
     live = await measureCounts(ctx);
-    liveSpotCheck = await fetchSpotCheckCustomer(ctx);
+    liveSpotCheck = await fetchFirstCustomer(ctx);
 
     // Every one of these is expected to be exactly the cap, not the real
     // count - see the module comment. Tolerance stays tight (10%) because
@@ -265,10 +386,7 @@ async function runDataAndCache(ctx) {
       console.log("skipped: tables were already cached");
       return;
     }
-    if (live.charges === 0) {
-      console.log("skipped: no charges found - did you run the seed script?");
-      return;
-    }
+    assert(live.charges > 0, `No charges visible. ${SEED_HINT}`);
     // Seed targets ~15% refunded. Generous tolerance: this ratio is measured
     // over the capped first 100 rows here, so it's a sample, not the truth.
     assertApprox(live.chargesRefunded / live.charges, 0.15, 0.5, "live refunded charge percentage");
@@ -279,10 +397,7 @@ async function runDataAndCache(ctx) {
       console.log("skipped: tables were already cached");
       return;
     }
-    if (live.subscriptions === 0) {
-      console.log("skipped: no subscriptions found - did you run the seed script?");
-      return;
-    }
+    assert(live.subscriptions > 0, `No subscriptions visible. ${SEED_HINT}`);
     assert(live.subsActive + live.subsCanceled > 0, "Expected some active or canceled subscriptions");
     assert(
       live.subsActive + live.subsCanceled <= live.subscriptions,
@@ -295,14 +410,12 @@ async function runDataAndCache(ctx) {
       console.log("skipped: tables were already cached");
       return;
     }
-    if (!liveSpotCheck) {
-      console.log("skipped: 'Test Customer 1' not found - seed script may use a different naming pattern");
-      return;
-    }
-    assert(
-      liveSpotCheck.email && liveSpotCheck.email.includes("test.customer1"),
-      `Unexpected email for Test Customer 1: ${liveSpotCheck.email}`
-    );
+    // No "not found" guard any more: the target is whatever the live query
+    // returned first, so it exists by construction. fetchFirstCustomer already
+    // failed loudly if the catalog held no customers at all.
+    assert(liveSpotCheck, "Expected the live phase to have chosen a spot-check target");
+    assertEmailBelongsTo(liveSpotCheck, "the live spot-check customer");
+    console.log(`live spot check on '${liveSpotCheck.name}' (${liveSpotCheck.email})`);
   });
 
   // ---------------------------------------------------------------- Phase 2
@@ -384,20 +497,14 @@ async function runDataAndCache(ctx) {
   });
 
   await step("cached charge refund distribution is plausible", async () => {
-    if (cached.charges === 0) {
-      console.log("skipped: no charges found - did you run the seed script?");
-      return;
-    }
+    assert(cached.charges > 0, `No charges in the cached table. ${SEED_HINT}`);
     // Same ~15% target as the live pass, but this one is measured over the
     // full table rather than a capped 100-row sample.
     assertApprox(cached.chargesRefunded / cached.charges, 0.15, 0.5, "cached refunded charge percentage");
   });
 
   await step("cached subscription status distribution is sane", async () => {
-    if (cached.subscriptions === 0) {
-      console.log("skipped: no subscriptions found - did you run the seed script?");
-      return;
-    }
+    assert(cached.subscriptions > 0, `No subscriptions in the cached table. ${SEED_HINT}`);
     assert(cached.subsActive + cached.subsCanceled > 0, "Expected some active or canceled subscriptions");
     assert(
       cached.subsActive + cached.subsCanceled <= cached.subscriptions,
@@ -406,10 +513,7 @@ async function runDataAndCache(ctx) {
   });
 
   await step("cached invoice count is consistent with subscriptions", async () => {
-    if (cached.invoices === 0) {
-      console.log("skipped: no invoices found - did you run the seed script?");
-      return;
-    }
+    assert(cached.invoices > 0, `No invoices in the cached table. ${SEED_HINT}`);
     // REPLACED ASSERTION, worth reading before "fixing" this back.
     //
     // This used to assert invoices ~= 25% of the customer count. That only
@@ -430,25 +534,42 @@ async function runDataAndCache(ctx) {
     );
   });
 
+  // THE ASSERTION THIS WHOLE TEST EXISTS TO MAKE, and until 2026-08-03 it had
+  // never run. Every other check here is about how MANY rows come back; this is
+  // the only one about whether caching preserves the VALUES.
+  //
+  // It looks up the SAME customer the live phase chose. That row was returned by
+  // a live query, so a cached lookup missing it means caching lost a row - a
+  // real defect, asserted rather than skipped.
   await step("cached field-level spot check matches the live one", async () => {
-    const cachedSpotCheck = await fetchSpotCheckCustomer(ctx);
-    if (!cachedSpotCheck) {
-      console.log("skipped: 'Test Customer 1' not found - seed script may use a different naming pattern");
+    // When the live phase was skipped there is no live target, so pick one from
+    // the cached table instead. The value comparison then has nothing to compare
+    // against, which the assertion below states explicitly rather than hiding.
+    const targetName = liveSpotCheck ? liveSpotCheck.name : (await fetchFirstCustomer(ctx)).name;
+
+    const cachedSpotCheck = await fetchCustomerByName(ctx, targetName);
+    assert(
+      cachedSpotCheck,
+      `'${targetName}' was returned by a query before caching but cannot be found in the cached table. ` +
+        `Caching appears to have lost a row - this is not a seed-data problem.`
+    );
+    assertEmailBelongsTo(cachedSpotCheck, `the cached customer '${targetName}'`);
+
+    // The point of running this twice: caching must not alter field values,
+    // only how many rows a count can see.
+    if (!liveSpotCheck) {
+      console.log(
+        `note: the live phase was skipped, so '${targetName}' could only be checked in isolation - the ` +
+          `live-vs-cached value comparison did not run this time`
+      );
       return;
     }
     assert(
-      cachedSpotCheck.email && cachedSpotCheck.email.includes("test.customer1"),
-      `Unexpected cached email for Test Customer 1: ${cachedSpotCheck.email}`
+      cachedSpotCheck.email === liveSpotCheck.email && cachedSpotCheck.name === liveSpotCheck.name,
+      `Cached row differs from the live row - live ${JSON.stringify(liveSpotCheck)}, ` +
+        `cached ${JSON.stringify(cachedSpotCheck)}`
     );
-    // The point of running this twice: caching must not alter field values,
-    // only how many rows a count can see.
-    if (liveSpotCheck) {
-      assert(
-        cachedSpotCheck.email === liveSpotCheck.email && cachedSpotCheck.name === liveSpotCheck.name,
-        `Cached row differs from the live row - live ${JSON.stringify(liveSpotCheck)}, ` +
-          `cached ${JSON.stringify(cachedSpotCheck)}`
-      );
-    }
+    console.log(`live and cached rows for '${targetName}' match exactly`);
   });
 
   await step("live vs cached comparison summary", async () => {

@@ -224,6 +224,29 @@ None are severe alone, but each silently breaks naive client code and several co
 | **`transpileSql` returns `{query}`** | The reference documents `{result}` |
 | **Metadata refresh status is lower-kebab** | Returns `not-active`; the reference documents `NOT_ACTIVE` |
 | **Executing a saved query keys off `id`** | Not `queryId`. `queryId`, `queryRefId` and `savedQueryId` all return `400`, as does passing the id as a JSON number |
+| **Numeric columns come back as strings** | `SELECT amount FROM charges` returns `"15000"`, not `15000`. Any caller doing arithmetic gets string concatenation instead of addition. Asserted in `C` so that if Peaka starts returning real numbers the suite goes red and the change gets noticed |
+
+---
+
+## Verified working: cache refresh does pick up source changes
+
+Not a bug — a question that had never been answered, and worth recording because the answer was genuinely
+uncertain before it was measured. `M` proves the refresh endpoints *respond* correctly, but a refresh that
+returned `200` and silently fetched nothing new would have passed every assertion in it.
+
+Scenario `O` adds a real customer to Stripe and watches what the cache does. Measured 2026-08-03:
+
+| Step | Result |
+|---|---|
+| Before any refresh | The new customer is **not** visible — confirming the query reads the cached snapshot, without which the rest proves nothing |
+| After `triggerIncrementalUpdate` | **Visible.** Incremental sync *does* detect inserts — the open question going in |
+| Row count | Rose by exactly one, so the refresh reconciles rather than duplicating |
+| After deleting upstream + full refresh | Removal reflected, count back to baseline |
+
+Both directions work. The scenario still tries incremental first and falls back to a full refresh, and
+reports which one succeeded rather than asserting it — if a future connector version stops detecting
+inserts incrementally, that surfaces as a logged difference rather than a red test, and this table is
+what it should be compared against.
 
 ---
 

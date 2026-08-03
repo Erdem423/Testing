@@ -18,6 +18,43 @@ async function runErrorHandling(ctx) {
     assertStatusIn(res, [400, 404, 422], "query non-existent table");
   });
 
+  // THE OTHER TWO IDENTIFIER POSITIONS. A query names catalog, schema, table
+  // and columns; only a bad TABLE was covered, so a connector that resolved
+  // any of the rest sloppily would have gone unnoticed.
+  //
+  // Both assert an EXACT 400 rather than a set. Measured directly before these
+  // were written, and pinning them is deliberate: the suite has already had a
+  // hedged status set conceal a real bug for as long as the step existed.
+  //
+  // The message check is the load-bearing half. A 400 alone only says "the
+  // query was rejected" - it does not distinguish a genuine resolution failure
+  // from a parse error, a quota rejection, or a connector timeout that happens
+  // to 400. Requiring the offending identifier to appear by name is what makes
+  // this a test of identifier resolution specifically.
+  await step("a non-existent schema is rejected by name", async () => {
+    const badSchema = "definitely_not_a_schema";
+    const sql = `SELECT * FROM "${ctx.catalogName}"."${badSchema}"."customers" LIMIT 1`;
+    const res = await ctx.client.executeQuery({ statement: sql }, "SIMPLE");
+
+    assertStatus(res, 400, "query with a non-existent schema");
+    assert(
+      res.body && typeof res.body.message === "string" && res.body.message.includes(badSchema),
+      `Expected the error to name the bad schema '${badSchema}', got: ${JSON.stringify(res.body)}`
+    );
+  });
+
+  await step("a non-existent column is rejected by name", async () => {
+    const badColumn = "definitely_not_a_column";
+    const sql = `SELECT ${badColumn} FROM "${ctx.catalogName}"."${ctx.schemaName}"."customers" LIMIT 1`;
+    const res = await ctx.client.executeQuery({ statement: sql }, "SIMPLE");
+
+    assertStatus(res, 400, "query with a non-existent column");
+    assert(
+      res.body && typeof res.body.message === "string" && res.body.message.includes(badColumn),
+      `Expected the error to name the bad column '${badColumn}', got: ${JSON.stringify(res.body)}`
+    );
+  });
+
   await step("pagination via limit/offset returns non-overlapping pages", async () => {
     // Paginates 'refunds', NOT 'charges', deliberately.
     //
