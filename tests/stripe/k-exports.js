@@ -101,6 +101,48 @@ async function runExports(ctx) {
     );
   });
 
+  // EXPORTING A TABLE DIRECTLY, rather than a saved query - a separate endpoint
+  // from everything above, and the only place this suite exports real connector
+  // data instead of a `SELECT 1` literal.
+  //
+  // THE ROW COUNT IS THE POINT. `charges` holds 652 rows; the export captures
+  // 100 - the live-query cap, now inside a downloadable file. That is the third
+  // place the cap surfaces (COUNT(*), row fetches, and here), and the most
+  // consequential: a CSV a human downloads and acts on, reporting SUCCEEDED
+  // while holding under a sixth of the table.
+  //
+  // Asserted as the measured cap for the same reason C's live counts are - a
+  // deliberate PASSING regression test. If Peaka fixes the pagination this goes
+  // red, which is the intended signal; do not "fix" it by loosening the check.
+  await step("exporting a table directly is capped at the live row limit", async () => {
+    const res = await ctx.client.createTableExport(ctx.catalogId, ctx.schemaName, "charges", {
+      format: "CSV",
+      limit: 1000,
+    });
+    assertStatusIn(res, [200, 202], "createTableExport(charges)");
+    assert(res.body && res.body.id, `Expected a table-export job id, got: ${JSON.stringify(res.body)}`);
+
+    let last = null;
+    for (let attempt = 1; attempt <= MAX_POLL_ATTEMPTS; attempt++) {
+      const poll = await ctx.client.getExport(res.body.id);
+      assertStatus(poll, 200, "getExport (table export)");
+      last = poll.body;
+      if (["SUCCEEDED", "FAILED", "CANCELLED", "EXPIRED"].includes(String(poll.body.status).toUpperCase())) break;
+      await sleep(POLL_INTERVAL_MS);
+    }
+
+    assertEqual(String(last.status).toUpperCase(), "SUCCEEDED", "table export status");
+    assertEqual(
+      Number(last.rowCount),
+      ctx.expectedCustomerCountNonCache,
+      "rows captured by a table export (expected the live cap, not the real row count)"
+    );
+    console.log(
+      `table export of 'charges' SUCCEEDED with ${last.rowCount} rows - the table holds far more; ` +
+        `the live cap follows the data into the file`
+    );
+  });
+
   // Cancelling an already-finished job is documented as idempotent, so this
   // is safe to run against the completed export rather than racing a live one.
   await step("cancel is accepted and idempotent", async () => {

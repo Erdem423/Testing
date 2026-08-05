@@ -104,6 +104,70 @@ async function fetchIds(ctx, tableName, limit) {
 }
 
 /**
+ * Runs an aggregate and a raw fetch over the same table, so the two can be
+ * cross-checked against each other.
+ *
+ * WHY THIS IS A SECOND, INDEPENDENT ROUTE TO THE 100-ROW CAP. Every other
+ * assertion in this file reaches the cap through COUNT(*). This reaches it from
+ * the other side: compute the total client-side from the rows a caller can
+ * actually fetch, and compare. Measured live on `charges` (652 real rows):
+ *
+ *   aggregate:  COUNT(*)=100  SUM=633201
+ *   raw rows:   100 fetched   client-side SUM=633201
+ *
+ * They agree, and THAT is the finding - the aggregate is computed over the same
+ * truncated scan the rows come from. Until now the README asserted the cap sits
+ * on the scan rather than on the aggregate, inferred from filtered counts being
+ * capped too. This measures it directly.
+ *
+ * Number() is required because Peaka returns numeric columns as STRINGS - see
+ * the shape step above and FINDINGS.md.
+ */
+async function aggregateVsRaw(ctx, tableName, column) {
+  const agg = await ctx.client.executeQuery(
+    { statement: `SELECT COUNT(*) AS cnt, SUM(${column}) AS total FROM ${qname(ctx, tableName)}` },
+    "SIMPLE"
+  );
+  assertStatus(agg, 200, `aggregate over ${tableName}.${column}`);
+
+  // A limit comfortably above the real row count, so the fetch is bounded by
+  // the data rather than by the LIMIT.
+  const rows = await ctx.client.executeQuery(
+    { statement: `SELECT ${column} FROM ${qname(ctx, tableName)} LIMIT 1000` },
+    "SIMPLE"
+  );
+  assertStatus(rows, 200, `raw ${column} values from ${tableName}`);
+
+  const values = rows.body.data.map((r) => Number(r[column]));
+  return {
+    cnt: Number(agg.body.data[0].cnt),
+    total: Number(agg.body.data[0].total),
+    rowCount: values.length,
+    rowSum: values.reduce((a, b) => a + b, 0),
+  };
+}
+
+/**
+ * The shared assertions for the above, run once per phase.
+ *
+ * `rowCount === cnt` comes FIRST and carries the weight: it proves both sides
+ * saw the same scan, which is what makes comparing the sums meaningful rather
+ * than a coincidence of two numbers that happen to match.
+ */
+function assertAggregateMatchesRaw(result, label) {
+  assertEqual(
+    result.rowCount,
+    result.cnt,
+    `${label}: rows fetched vs COUNT(*) - the aggregate and the fetch must see the same scan`
+  );
+  assertEqual(
+    result.rowSum,
+    result.total,
+    `${label}: client-side SUM over the fetched rows vs the server's SUM`
+  );
+}
+
+/**
  * The spot-check target, DERIVED rather than hardcoded.
  *
  * This used to look for `Test Customer 1` by name, and never found it. Live
@@ -334,6 +398,27 @@ async function runDataAndCache(ctx) {
     console.log(`shape check: columns [${returned.join(", ")}], ids prefixed 'ch_', amount typed as string`);
   });
 
+  await step("live: the aggregate matches a total computed from the fetched rows", async () => {
+    if (skipLivePhase) {
+      console.log("skipped: tables were already cached");
+      return;
+    }
+    const r = await aggregateVsRaw(ctx, "charges", "amount");
+    assertAggregateMatchesRaw(r, "live charges");
+
+    // The cap, reached from a different direction than the COUNT(*) steps.
+    // Both sides being capped is exactly why they agree.
+    assertEqual(
+      r.cnt,
+      ctx.expectedCustomerCountNonCache,
+      "live COUNT(*) on charges (expected the cap)"
+    );
+    console.log(
+      `live charges: COUNT(*)=${r.cnt}, SUM=${r.total}; ${r.rowCount} rows fetched summing to ${r.rowSum} - ` +
+        `the aggregate is computed over the same truncated scan`
+    );
+  });
+
   await step("live counts are capped at 100 on every table", async () => {
     if (skipLivePhase) {
       console.log("skipped: tables were already cached (see previous step)");
@@ -531,6 +616,24 @@ async function runDataAndCache(ctx) {
       cached.invoices >= cached.subscriptions,
       `Expected at least one invoice per subscription, got ${cached.invoices} invoices ` +
         `for ${cached.subscriptions} subscriptions`
+    );
+  });
+
+  await step("cached: the aggregate matches a total computed from the fetched rows", async () => {
+    const r = await aggregateVsRaw(ctx, "charges", "amount");
+    assertAggregateMatchesRaw(r, "cached charges");
+
+    // The mirror of the live step: once cached, both the aggregate and the
+    // fetch see the whole table, so the same equality now holds at the REAL
+    // numbers instead of at the cap.
+    assert(
+      r.cnt > ctx.expectedCustomerCountNonCache,
+      `Cached COUNT(*) on charges is ${r.cnt}, which is not above the live cap ` +
+        `(${ctx.expectedCustomerCountNonCache}). Either the cache did not widen the scan, or this is ` +
+        `reading live data - and then the comparison above proves nothing.`
+    );
+    console.log(
+      `cached charges: COUNT(*)=${r.cnt}, SUM=${r.total}; ${r.rowCount} rows fetched summing to ${r.rowSum}`
     );
   });
 

@@ -10,9 +10,10 @@
  * permanently shifts the row counts scenario C asserts against, whereas a
  * leftover cache is only debris.
  *
- * Timeout is generous - `customers` syncs in ~37s and this scenario may refresh
- * it up to three times (incremental, full refresh, then again after the
- * upstream delete).
+ * Timeout is generous - `customers` syncs in ~37s and this scenario refreshes it
+ * repeatedly: once per change type (insert, update, delete), each with a
+ * full-refresh fallback if the incremental misses it. Worst case is around six
+ * syncs, which is why this is the longest-running scenario in the suite.
  */
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
@@ -29,7 +30,7 @@ test(
     ctx.runTag = runTag();
     await withScenario("O: Data Freshness", () => runDataFreshness(ctx));
   },
-  420000
+  600000
 );
 
 afterAll(async () => {

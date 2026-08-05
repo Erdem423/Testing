@@ -55,6 +55,21 @@ async function runDataFreshness(ctx) {
     return Number(res.body.data[0].cnt);
   }
 
+  /**
+   * The progress counters from the most recent INCREMENTAL execution.
+   *
+   * Reads `lastIncrementalCacheExecution` directly rather than going through
+   * helpers/cacheExecution.js, which deliberately returns whichever record is
+   * most recent - here the incremental one is specifically wanted, even when a
+   * full refresh ran afterwards.
+   */
+  async function incrementalProgress() {
+    const res = await ctx.client.getCacheStatus(cacheId);
+    assertStatus(res, 200, "getCacheStatus (incremental progress)");
+    const exec = res.body.lastIncrementalCacheExecution;
+    return exec ? exec.progress : null;
+  }
+
   /** Looks for the new customer by exact name. Returns the row or null. */
   async function findNewCustomer() {
     const res = await ctx.client.executeQuery(
@@ -200,31 +215,138 @@ async function runDataFreshness(ctx) {
     assertEqual(after, baselineCount + 1, `cached count after adding one customer (via ${foundVia})`);
   });
 
-  await step("deleting the customer upstream is reflected after a refresh", async () => {
+  // IS THE INCREMENTAL ACTUALLY INCREMENTAL? Everything above proves the row
+  // became visible; none of it distinguishes a genuine delta sync from a quiet
+  // full re-copy wearing the incremental label. The progress counters are the
+  // only thing that can tell those apart, and until 2026-08-04 nothing in this
+  // suite had ever read them with real data - the only previous look was at
+  // `transfers`, a 0-row table, where every counter is trivially zero.
+  //
+  // MEASURED on a 505-row table:
+  //   initial sync      -> cached 707, inserted 505, updated 202
+  //   after one insert  -> cached   3, inserted   1, updated   2
+  //
+  // Two counters are trustworthy and asserted; the rest are reported. See the
+  // update and delete steps below for why.
+  await step("the incremental moved a delta, not the whole table", async () => {
+    if (foundVia !== "incremental") {
+      console.log(
+        `skipped: the row arrived via ${foundVia}, so the incremental execution record does not describe ` +
+          `the sync that made it visible`
+      );
+      return;
+    }
+    const progress = await incrementalProgress();
+    assert(progress, "Expected an incremental execution record with a progress object");
+    console.log(`incremental progress: ${JSON.stringify(progress)}`);
+
+    // Exactly one row was added upstream, and this scenario is the ONLY thing
+    // in the suite that writes to Stripe - so this is deterministic.
+    assertEqual(
+      Number(progress.numberOfInsertedRecords),
+      1,
+      "numberOfInsertedRecords after adding exactly one customer"
+    );
+
+    // The claim that matters: a delta sync touches a handful of rows, not the
+    // whole table. 10% of the baseline is a deliberately loose bound - the
+    // measured value is 3 against a baseline of 505, so anything approaching
+    // the table size means the "incremental" is really a full re-copy.
+    assert(
+      Number(progress.numberOfCachedRecords) < baselineCount / 10,
+      `An incremental update processed ${progress.numberOfCachedRecords} records against a table of ` +
+        `${baselineCount}. That is not a delta - it suggests the incremental path is re-copying the ` +
+        `whole table. Measured normal: 3.`
+    );
+  });
+
+  // UPDATES, which nothing covered before. The email is mutated rather than the
+  // name because findNewCustomer() looks the row up BY name - the name has to
+  // stay a stable key for any of this to be checkable.
+  await step("an upstream update propagates to the cache", async () => {
+    const updatedEmail = `${customerName}+updated@example.invalid`;
+    const upd = await ctx.stripe.updateCustomer(customerId, { email: updatedEmail });
+    assert(upd.ok, `Stripe updateCustomer failed (${upd.status}): ${JSON.stringify(upd.body).slice(0, 200)}`);
+    assertEqual(upd.body.email, updatedEmail, "email at the source after the update");
+
+    const res = await ctx.client.triggerIncrementalUpdate(cacheId);
+    assertStatus(res, 200, "triggerIncrementalUpdate (after upstream update)");
+    await pollCacheUntilComplete(ctx, cacheId);
+
+    let row = await findNewCustomer();
+    let via = row && row.email === updatedEmail ? "incremental" : null;
+
+    if (!via) {
+      console.log("incremental did not carry the update through; trying a full refresh");
+      const full = await ctx.client.triggerFullRefresh(cacheId);
+      assertStatus(full, 200, "triggerFullRefresh (after upstream update)");
+      await pollCacheUntilComplete(ctx, cacheId);
+      row = await findNewCustomer();
+      if (row && row.email === updatedEmail) via = "fullRefresh";
+    }
+
+    assert(
+      via,
+      `'${customerName}' was updated in Stripe to ${updatedEmail} but the cache still shows ` +
+        `${JSON.stringify(row && row.email)} after both an incremental update and a full refresh. A cache ` +
+        `that never reflects edits is stale in a way no row count would reveal.`
+    );
+    console.log(`update propagated via ${via}: email is now ${row.email}`);
+    console.log(`  progress for that sync: ${JSON.stringify(await incrementalProgress())}`);
+
+    // An update must not change the row COUNT - if it does, the sync is
+    // inserting a duplicate rather than reconciling the existing row.
+    assertEqual(await cachedCount(), baselineCount + 1, "cached count after an update (should be unchanged)");
+  });
+
+  await step("deleting the customer upstream is reflected", async () => {
     const del = await ctx.stripe.deleteCustomer(customerId);
     assert(del.ok, `Stripe deleteCustomer failed (${del.status}): ${JSON.stringify(del.body).slice(0, 200)}`);
     // Deleted upstream, so drop it from cleanup's list - deleting it twice
     // would log a spurious warning.
     ctx.createdStripeCustomerIds = ctx.createdStripeCustomerIds.filter((id) => id !== customerId);
 
-    // The mirror image of the check above: a cache that notices inserts but
-    // never notices deletions is just as stale, and full refresh is the
-    // mechanism most likely to reconcile it.
-    const res = await ctx.client.triggerFullRefresh(cacheId);
-    assertStatus(res, 200, "triggerFullRefresh (after upstream delete)");
+    // INCREMENTAL FIRST. This step used to go straight to a full refresh, on
+    // the assumption that a watermark-based sync would not notice a row that
+    // simply vanished - the classic limitation. Measured 2026-08-04: it does
+    // notice. Trying incremental first is what turns that assumption into a
+    // result, with the full refresh kept as a fallback so coverage is never
+    // lost if the behaviour changes.
+    const res = await ctx.client.triggerIncrementalUpdate(cacheId);
+    assertStatus(res, 200, "triggerIncrementalUpdate (after upstream delete)");
     await pollCacheUntilComplete(ctx, cacheId);
 
-    const stillThere = await findNewCustomer();
+    let via = (await findNewCustomer()) === null ? "incremental" : null;
+
+    if (!via) {
+      console.log("incremental did not remove the deleted row; trying a full refresh");
+      const full = await ctx.client.triggerFullRefresh(cacheId);
+      assertStatus(full, 200, "triggerFullRefresh (after upstream delete)");
+      await pollCacheUntilComplete(ctx, cacheId);
+      if ((await findNewCustomer()) === null) via = "fullRefresh";
+    }
+
     const after = await cachedCount();
-    if (stillThere) {
+    assert(
+      via,
+      `'${customerName}' was deleted in Stripe but is STILL in the cache after both an incremental ` +
+        `update and a full refresh (count ${after}, baseline ${baselineCount}). A cache that never drops ` +
+        `removed rows keeps serving data that no longer exists at the source.`
+    );
+    console.log(`upstream delete reflected via ${via} (count back to ${after})`);
+    assertEqual(after, baselineCount, "cached count after the customer was deleted upstream");
+
+    // REPORTED, NOT ASSERTED - and this is a genuine product finding.
+    // numberOfDeletedRecords stays 0 even though the row was demonstrably
+    // removed from the cache by this very sync. The counter does not track
+    // deletions. Asserting 1 here would be asserting a bug is fixed; asserting
+    // 0 would institutionalise it. See FINDINGS.md.
+    const progress = await incrementalProgress();
+    if (progress && Number(progress.numberOfDeletedRecords) === 0 && via === "incremental") {
       console.log(
-        `FINDING: '${customerName}' was deleted in Stripe but is STILL in the cache after a full ` +
-          `refresh (count ${after}, baseline ${baselineCount}). A full refresh appears not to remove ` +
-          `rows that vanished upstream. Reported rather than asserted - confirm by hand before filing.`
+        `FINDING: the incremental removed the row but reports numberOfDeletedRecords=0 ` +
+          `(${JSON.stringify(progress)}). The deletion counter does not reflect deletions.`
       );
-    } else {
-      console.log(`upstream delete reflected after a full refresh (count back to ${after})`);
-      assertEqual(after, baselineCount, "cached count after the customer was deleted upstream");
     }
   });
 
