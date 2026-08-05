@@ -80,6 +80,14 @@ class PeakaClient {
     return this._request("GET", `/connections/${this.projectId}/${connectionId}`);
   }
 
+  // Returns LESS than getConnection, not more, despite the name: measured
+  // 2026-08-04 it gives `{ type }` alone, where getConnection gives
+  // id/name/type/url. Path verified by probe - `/details` and the
+  // project-scoped forms all return the generic framework 404.
+  getConnectionDetail(connectionId) {
+    return this._request("GET", `/connections/${this.projectId}/${connectionId}/detail`);
+  }
+
   updateConnection(connectionId, { name, type, credential, connectionCallback }) {
     return this._request("PUT", `/connections/${this.projectId}/${connectionId}`, {
       body: { name, type, credential, connectionCallback },
@@ -275,6 +283,39 @@ class PeakaClient {
     return this._request("DELETE", `/data/projects/${this.projectId}/queries/${queryId}`);
   }
 
+  // ---- Query paths and folders ----
+  //
+  // PATCH, NOT the documented PUT. The reference gives
+  // `PUT /api/queries/{queryId}/path`; both parts of that are wrong against the
+  // live API. Verified 2026-08-03 by calling each candidate with a well-formed
+  // but non-existent query id and comparing against a deliberate nonsense
+  // control:
+  //     /api/queries/{id}/path            -> 404, same shape as the control
+  //     .../queries/{id}/path via PUT     -> 405 Method Not Allowed
+  //     .../queries/{id}/path via POST    -> 405 Method Not Allowed
+  //     .../queries/{id}/path via PATCH   -> reached the handler
+  // The 405s are what identified the route as real but the verb as wrong.
+  //
+  // Moving a query to a path that does not exist CREATES a folder, and that
+  // folder OUTLIVES the query - deleting the query leaves it behind. Anything
+  // calling this must track the folder for cleanup; see helpers/cleanup.js.
+  updateQueryPath(queryId, path) {
+    return this._request("PATCH", `/data/projects/${this.projectId}/queries/${queryId}/path`, {
+      body: { path },
+    });
+  }
+
+  // Returns { items: [{ id, name, path, parentId, createdAt, ... }] } - note
+  // the envelope, unlike the bare arrays most list endpoints return.
+  listQueryFolders() {
+    return this._request("GET", `/data/projects/${this.projectId}/queries/folders`);
+  }
+
+  // 204 on success.
+  deleteQueryFolder(folderId) {
+    return this._request("DELETE", `/data/projects/${this.projectId}/queries/folders/${folderId}`);
+  }
+
   // ---- Materialized queries ----
   // A materialized query is created via createQuery with
   // queryType: "MATERIALIZED". inputQueryRefId is OPTIONAL - inputQuery
@@ -302,6 +343,23 @@ class PeakaClient {
     return this._request("POST", `/data/projects/${this.projectId}/queries/${queryId}/exports`, {
       body: { format, limit, columns, compression, includeSystemColumns, csvOptions },
     });
+  }
+
+  // Exports a TABLE directly, rather than a saved query. Path verified against
+  // the live API 2026-08-04 - the reference abbreviates it, and three of the
+  // four candidates returned the generic framework 404.
+  //
+  // Two behaviours worth knowing, both measured:
+  //   - The 100-row cap applies. Exporting the 652-row `charges` table produces
+  //     a file with rowCount 100, with no error and no indication.
+  //   - Exporting an EMPTY table FAILS rather than producing an empty file:
+  //     "Trino-native export produced no files at s3a://export/...".
+  createTableExport(catalogId, schemaName, tableName, { format, limit, columns, compression } = {}) {
+    return this._request(
+      "POST",
+      `/data/projects/${this.projectId}/catalogs/${catalogId}/schemas/${schemaName}/tables/${tableName}/exports`,
+      { body: { format, limit, columns, compression } }
+    );
   }
 
   getExport(exportId) {

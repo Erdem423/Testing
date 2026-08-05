@@ -53,6 +53,9 @@ function buildFreshCtx() {
     createdCatalogIds: [],
     createdCacheIds: [],
     createdQueryIds: [],
+    // Moving a query to a new path creates a folder that OUTLIVES the query,
+    // so folders need tracking of their own - deleting the query is not enough.
+    createdQueryFolderIds: [],
     createdInternalTableNames: [],
     // UPSTREAM resources, not Peaka ones. A leftover customer permanently
     // shifts the counts C asserts against, so cleanup deletes these first.

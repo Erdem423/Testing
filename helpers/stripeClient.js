@@ -65,6 +65,18 @@ class StripeClient {
     return this.request("POST", "/customers", { name, email });
   }
 
+  /**
+   * Updates an existing customer. Stripe uses POST-to-the-resource for
+   * updates, not PUT or PATCH - only the fields passed are changed.
+   *
+   * Used by o-data-freshness to mutate a row at the source and check the
+   * change reaches the cache. Change the EMAIL, not the name: the scenario
+   * looks its customer up by name, so the name has to stay a stable key.
+   */
+  updateCustomer(customerId, fields) {
+    return this.request("POST", `/customers/${customerId}`, fields);
+  }
+
   /** Stripe returns { id, deleted: true } on success. */
   deleteCustomer(customerId) {
     return this.request("DELETE", `/customers/${customerId}`);

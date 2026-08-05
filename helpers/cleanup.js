@@ -68,6 +68,11 @@ async function cleanup(ctx, log = console.log) {
   }
 
   await deleteEach(ctx.createdQueryIds, "query", (id) => ctx.client.deleteQuery(id));
+  // AFTER the queries, deliberately: a folder still holding queries may refuse
+  // to delete. Folders are tracked separately because deleting a query does not
+  // remove the folder it was moved into - verified 2026-08-03, the folder was
+  // still listed after its only query was gone.
+  await deleteEach(ctx.createdQueryFolderIds, "query folder", (id) => ctx.client.deleteQueryFolder(id));
   await deleteEach(ctx.createdInternalTableNames, "internal table", (n) => ctx.client.deleteInternalTable(n));
 
   for (const catalogId of [...ctx.createdCatalogIds].reverse()) {
