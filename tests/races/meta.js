@@ -70,5 +70,21 @@ module.exports = {
         "20 parallel queries degrade gracefully",
       ],
     },
+    {
+      // Tiers 1-3 ask "does it error, or wedge?". This asks whether the API
+      // silently writes something WRONG down and keeps it - an export file, a
+      // materialized snapshot, a cached row. It is also the only race tier that
+      // WRITES TO STRIPE.
+      name: "RACE-T4: Durable artifacts built mid-sync",
+      category: "Persistence races",
+      steps: [
+        "provision an isolated catalog and a query to export",
+        "build three durable artifacts while the cache is syncing",
+        "an export started mid-sync reports what it captured",
+        "a source row created mid-sync is never permanently lost",
+        "a materialized query built mid-sync reports what it captured",
+        "the cache is still healthy and deletable afterwards",
+      ],
+    },
   ],
 };

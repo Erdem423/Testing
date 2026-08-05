@@ -1,7 +1,11 @@
 # Spec — deliberate concurrency conflicts on shared resources
 
-**All three tiers are implemented** — `tests/stripe/races-tier{1,2,3}.js`, run with `npm run test:races`
-(~268s, three sequential scenarios). One step remains gated and unrun: Tier 2 #4. Supersedes the earlier `STATE-MACHINE-SPEC.md` proposal, which covered *sequential* state
+**All four tiers are implemented** — `tests/races/tier{1,2,3,4}.js`, run with `npm run test:races`
+(four sequential scenarios). One step remains gated and unrun: Tier 2 #4.
+
+Tiers 1-3 ask *"does it error, or wedge?"*. **Tier 4** asks a different question — *does the API silently
+write something wrong down and keep it?* — and was added 2026-08-04 after noticing that no existing race
+covered durable damage, only transient failures. Supersedes the earlier `STATE-MACHINE-SPEC.md` proposal, which covered *sequential* state
 transitions and states outright that it cannot express overlapping ones. This covers exactly that gap.
 
 ## Why this one has a track record
@@ -324,7 +328,43 @@ It also made this file's sibling claim in `tests/races/tier3.js` untrue: the hea
 not disturb `B` and `C`, which held for the metadata steps and not for this one. 3.8b now uses the same
 `throwawayCatalog()` helper as the rest of the file and asserts the id is never the shared one.
 
-## Across all three tiers
+## Tier 4 results (implemented 2026-08-04)
+
+~38s, one scenario. A different question from Tiers 1-3, which all ask *"does it error, or wedge?"*:
+**does the API silently write something wrong down and keep it?** That matters because this suite's
+headline finding — the 100-row cap — is a silent truncation, not an error.
+
+All three artifacts are built inside a **single** initial-sync window rather than three separate ones,
+which is both cheaper and a closer model of a busy system.
+
+| Step | Outcome |
+|---|---|
+| **4.1** export started mid-sync | **`FAILED`**, no `rowCount`. The identical export after the sync settled **`SUCCEEDED` with 506 rows** |
+| **4.2** source row created mid-sync | Picked up by the running sync itself — **not lost**. No follow-up refresh needed |
+| **4.3** materialized query built mid-sync | **Captured ZERO rows, permanently** |
+
+**4.1 needed a control before it meant anything.** The first run reported `FAILED` and nothing more, which
+is uninterpretable — it could equally mean "exports of this query never work". Re-running the same export
+against the settled cache is what attributes the failure to the sync. Worth noting the behaviour is
+arguably *good*: failing loudly beats exporting an empty CSV that reports success.
+
+**4.2 is the reassuring result.** A watermark-based sync that advanced past a row written during the sync
+would lose it permanently. It does not — the running sync picked it up. The step still keeps its
+incremental-then-full-refresh ladder so a regression would be caught and attributed.
+
+**4.3 is the finding this tier was built for.** A materialized query is a stored snapshot (verified: adding
+a row upstream does not change it without a refresh), so a snapshot taken while the source reads as empty
+stays empty forever, with nothing indicating the data is wrong.
+
+Worth knowing: the non-raced baseline is already broken. A materialized query over an *uncached* table
+captures **100 rows of 505** — the live cap, frozen — with no race involved at all. See `FINDINGS.md` #2.
+The race makes a bad situation worse (0 instead of 100) rather than creating it.
+
+**Both 4.1 and 4.3 are reported, never asserted**, following Tier 1's duplicate-create precedent:
+asserting the broken outcome would institutionalise it, asserting the healthy one would be permanently
+red until Peaka fixes it.
+
+## Across all four tiers
 
 Ten conflicts tested, **one bug found** — the duplicate-`createCache` `500`, which was already suspected and
 is now deterministic. Everything else came back clean.
