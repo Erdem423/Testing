@@ -83,6 +83,38 @@ class StripeClient {
   }
 
   /**
+   * Counts every customer on the account, paging through Stripe's list API.
+   *
+   * WHY THIS EXISTS. Scenario C asks "does Peaka's cached count match reality?"
+   * and used to answer it against NUM_CUSTOMERS - a number typed into .env by
+   * hand. That made the suite unrunnable for anyone else: their account has a
+   * different number, so the assertion failed on a correctly-working Peaka.
+   *
+   * Reality is Stripe, not .env. Asking Stripe directly is both portable AND a
+   * stronger claim than comparing against a value someone maintained manually.
+   *
+   * Stripe caps `limit` at 100 and paginates with `starting_after`, so a
+   * 500-customer account costs ~6 requests. maxPages is a runaway guard, not a
+   * real limit - it throws rather than silently under-counting, since a quietly
+   * truncated count here would corrupt the very assertion it feeds.
+   */
+  async countCustomers({ maxPages = 200 } = {}) {
+    let total = 0;
+    let startingAfter = null;
+    for (let page = 0; page < maxPages; page++) {
+      const query = startingAfter ? `?limit=100&starting_after=${startingAfter}` : "?limit=100";
+      const res = await this.request("GET", `/customers${query}`);
+      if (!res.ok || !res.body || !Array.isArray(res.body.data)) {
+        throw new Error(`Stripe customer count failed on page ${page + 1}: ${res.status} ${JSON.stringify(res.body)}`);
+      }
+      total += res.body.data.length;
+      if (!res.body.has_more || res.body.data.length === 0) return total;
+      startingAfter = res.body.data[res.body.data.length - 1].id;
+    }
+    throw new Error(`Stripe customer count exceeded ${maxPages} pages - refusing to report a truncated total.`);
+  }
+
+  /**
    * Finds customers by exact name. Used to sweep leftovers from a crashed run -
    * Stripe has no name filter, so this pages through and matches client-side.
    */

@@ -1,5 +1,6 @@
 const { assertStatus, assertStatusIn, assert, assertEqual } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
+const { sweepStaleConnections } = require("../../helpers/sweepConnections");
 
 /**
  * Connection endpoints: create -> list -> get -> update -> delete, plus the
@@ -22,6 +23,18 @@ const { step } = require("../../helpers/step");
 async function runConnections(ctx) {
   const name = `e2e-auto-conn-${ctx.runTag}`;
   let connectionId = null;
+
+  // CLOSES THE ONE GAP cleanup.js cannot: it deletes only what the current run
+  // recorded, so a process killed between creating a connection and afterAll
+  // strands that connection with nothing able to find it later. Sweeping by
+  // prefix on the way IN makes the leak self-healing instead of permanent.
+  //
+  // Age-guarded rather than a bare prefix match, because these names embed
+  // runTag - deleting everything matching the prefix would remove a LIVE
+  // connection belonging to a concurrent run. See helpers/sweepConnections.js.
+  await step("sweep abandoned connections from killed runs", async () => {
+    await sweepStaleConnections(ctx, "e2e-auto-conn", (line) => console.log(line));
+  });
 
   await step("create a connection", async () => {
     const res = await ctx.client.createConnection({

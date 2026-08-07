@@ -472,9 +472,18 @@ async function runDataAndCache(ctx) {
       return;
     }
     assert(live.charges > 0, `No charges visible. ${SEED_HINT}`);
-    // Seed targets ~15% refunded. Generous tolerance: this ratio is measured
-    // over the capped first 100 rows here, so it's a sample, not the truth.
-    assertApprox(live.chargesRefunded / live.charges, 0.15, 0.5, "live refunded charge percentage");
+    // AN INVARIANT, NOT A RATIO. This used to assert ~15% refunded, which
+    // encoded one particular seed's shape and would fail on any other account
+    // while saying nothing about Peaka. What actually matters is that the
+    // `WHERE refunded = true` filter discriminates: not everything, not
+    // nothing. That holds on any account with mixed data, and still catches a
+    // filter that silently matches every row or none.
+    assert(
+      live.chargesRefunded > 0 && live.chargesRefunded < live.charges,
+      `Expected the refunded filter to match some but not all charges, got ` +
+        `${live.chargesRefunded} refunded of ${live.charges} total. Equal to 0 means the filter matched ` +
+        `nothing; equal to the total means it did not filter at all.`
+    );
   });
 
   await step("live subscription status distribution is sane", async () => {
@@ -578,14 +587,44 @@ async function runDataAndCache(ctx) {
   });
 
   await step("cached customer count matches the real seeded count", async () => {
-    assertApprox(cached.customers, ctx.expectedCustomerCount, 0.1, "cached customer count");
+    // ASKS STRIPE, NOT .env.
+    //
+    // This used to compare against NUM_CUSTOMERS - a number typed into .env by
+    // hand. That made the suite unrunnable for anyone else: a colleague's
+    // account has a different number, so this failed against a perfectly
+    // healthy Peaka and looked like a product bug.
+    //
+    // The question is "does Peaka's cached view match reality?", and reality is
+    // Stripe. Asking the source directly is portable AND a stronger claim, so
+    // the tolerance is tight rather than the old +/-10%: these should agree
+    // exactly, and any real drift is worth seeing.
+    //
+    // The small allowance that remains covers a customer created by a
+    // concurrently-running scenario (O writes to Stripe) landing between the
+    // cache sync and this count.
+    const stripeTotal = await ctx.stripe.countCustomers();
+    assert(
+      stripeTotal > 0,
+      `Stripe reports 0 customers, so there is nothing for the cache to match. ${SEED_HINT}`
+    );
+    const drift = Math.abs(cached.customers - stripeTotal);
+    assert(
+      drift <= 2,
+      `Cached customer count is ${cached.customers} but Stripe itself reports ${stripeTotal} ` +
+        `(difference ${drift}). The cache and the source disagree.`
+    );
+    console.log(`cached ${cached.customers} vs Stripe's own count ${stripeTotal}`);
   });
 
   await step("cached charge refund distribution is plausible", async () => {
     assert(cached.charges > 0, `No charges in the cached table. ${SEED_HINT}`);
-    // Same ~15% target as the live pass, but this one is measured over the
-    // full table rather than a capped 100-row sample.
-    assertApprox(cached.chargesRefunded / cached.charges, 0.15, 0.5, "cached refunded charge percentage");
+    // Same invariant as the live pass (see there for why it is not a ratio),
+    // but measured over the full table rather than a capped 100-row sample.
+    assert(
+      cached.chargesRefunded > 0 && cached.chargesRefunded < cached.charges,
+      `Expected the refunded filter to match some but not all cached charges, got ` +
+        `${cached.chargesRefunded} refunded of ${cached.charges} total.`
+    );
   });
 
   await step("cached subscription status distribution is sane", async () => {

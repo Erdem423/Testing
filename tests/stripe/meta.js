@@ -96,6 +96,7 @@ module.exports = {
       name: "G: Connection Endpoints",
       category: "Connections",
       steps: [
+        "sweep abandoned connections from killed runs",
         "create a connection",
         "an invalid token is not silently accepted",
         "a connection with no usable credential is rejected",

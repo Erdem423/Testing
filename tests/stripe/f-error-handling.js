@@ -81,10 +81,23 @@ async function runErrorHandling(ctx) {
     assertStatus(page1, 200, "refunds page1");
     assertStatus(page2, 200, "refunds page2");
 
-    if (page1.body.data.length === 0) {
-      console.log("skipped: no refunds to paginate - did you run the seed script?");
-      return;
-    }
+    // NO EMPTY-PAGE SKIP HERE ANY MORE, deliberately.
+    //
+    // This used to `return` when page 1 came back empty, which the reporter
+    // counted as a PASSING step - so a catalog with no refunds reported green
+    // while verifying nothing. Whether the data exists is now decided ONCE, up
+    // front, by the preflight gate on this scenario (see
+    // jest/stripe/connector.test.js), which produces a real test.skip that
+    // Jest counts separately from a pass.
+    //
+    // So reaching this point means the preflight saw enough rows, and an empty
+    // page here is a genuine failure worth surfacing rather than absorbing.
+    assert(
+      page1.body.data.length > 0,
+      "First page of refunds came back empty even though the preflight measured enough rows. " +
+        "That means something changed mid-run (a cache on refunds, or the rows disappearing) - " +
+        "not missing seed data."
+    );
 
     const ids1 = new Set(page1.body.data.map((r) => r.id));
     const ids2 = new Set(page2.body.data.map((r) => r.id));

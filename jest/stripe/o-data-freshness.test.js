@@ -18,12 +18,16 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
+const { gatedTest } = require("../../helpers/preflight");
 const { runDataFreshness } = require("../../tests/stripe/o-data-freshness");
 
 let ctx = null;
 
-test(
+// GATED: caches `customers` and asserts the baseline count exceeds the live
+// cap before it can measure whether a newly-created row reaches the cache.
+gatedTest(
   "O: Data Freshness",
+  "stripe.customers",
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();
