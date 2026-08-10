@@ -36,20 +36,25 @@ class PeakaClient {
     this.projectId = projectId || requireEnv("PEAKA_PROJECT_ID");
   }
 
-  async _request(method, path, { body, query } = {}) {
+  // `formData` sends a multipart/form-data body (FormData) instead of JSON -
+  // used only by createTableImport. Content-Type is deliberately OMITTED in
+  // that case: fetch sets its own `multipart/form-data; boundary=...` header,
+  // and hand-setting application/json (what every other call needs) would
+  // silently corrupt the upload.
+  async _request(method, path, { body, query, formData } = {}) {
     let url = `${BASE_URL}${path}`;
     if (query) {
       const qs = new URLSearchParams(query).toString();
       url += `?${qs}`;
     }
 
+    const headers = { Authorization: `Bearer ${this.apiKey}` };
+    if (!formData) headers["Content-Type"] = "application/json";
+
     const res = await fetch(url, {
       method,
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: body ? JSON.stringify(body) : undefined,
+      headers,
+      body: formData || (body ? JSON.stringify(body) : undefined),
     });
 
     let json = null;
@@ -251,6 +256,11 @@ class PeakaClient {
   }
 
   // ---- Queries ----
+  // SELECT-ONLY. Verified 2026-08-06: INSERT/UPDATE/DELETE/CREATE TABLE AS
+  // SELECT all return 400 "Statement type 'X' is not allowed" - there is no
+  // DML path through this endpoint. The only write path into a Peaka Table
+  // is createTableImport (CSV). Peaka BI Table has no known write path at
+  // all - see the "Peaka internal tables" comment block below.
   executeQuery(payload, format = "SIMPLE") {
     return this._request("POST", `/data/projects/${this.projectId}/queries/execute`, {
       body: payload,
@@ -409,6 +419,18 @@ class PeakaClient {
 
   // Takes an ARRAY of columns; dataType is one of
   // VARCHAR/BIGINT/BOOLEAN/DECIMAL/TIMESTAMP/TIME/DATE/UUID.
+  //
+  // NO JSON TYPE, contrary to the source doc's own claim that Peaka Table
+  // (unlike BI Table) supports JSON columns. Verified 2026-08-06:
+  // dataType: "JSON" is rejected here exactly as it is for addBiTableColumns
+  // - 400 "No enum constant com.peaka.gateway.model.ColumnRequest.ColumnType.JSON".
+  // The live server's column-type enum has no JSON member for EITHER table
+  // kind. This blocks PT-03/PT-10 in the source doc as literally specified.
+  //
+  // Every table also carries SYSTEM COLUMNS you never declared - observed:
+  // _id (bigint, default abstract_schema_mapper.next_id()), _version, and
+  // _created_time. A "columns match exactly what I added" assertion must
+  // filter these out rather than expecting an exact-length match.
   addInternalTableColumns(tableName, columns) {
     return this._request("POST", `/data/projects/${this.projectId}/table/${tableName}/columns`, { body: columns });
   }
@@ -419,6 +441,148 @@ class PeakaClient {
 
   deleteInternalTableColumn(tableName, columnName) {
     return this._request("DELETE", `/data/projects/${this.projectId}/table/${tableName}/columns/${columnName}`);
+  }
+
+  // Multipart upload: `file` is a CSV string, `mappings` is
+  // [{ name, csvColumnName }] (or csvColumnIndex when containsHeader is
+  // false - csvColumnName is then rejected). Table name in the path, as with
+  // create/delete above.
+  //
+  // CONSTRAINTS ARE NOT ENFORCED ON IMPORT. Verified 2026-08-06: a table with
+  // an isUnique/isNotNull column happily imports two duplicate values -
+  // "processed": 2, COUNT(*) afterwards is 2. isNotNull/isUnique/defaultValue
+  // are accepted at column-creation time but not checked here, and there is
+  // no other write path to test them against - see PT-09 in the source doc.
+  createTableImport(tableName, { file, mappings, containsHeader = true }) {
+    const fd = new FormData();
+    fd.append("file", new Blob([file], { type: "text/csv" }), "import.csv");
+    fd.append("request", JSON.stringify({ mappings, containsHeader }));
+    return this._request("POST", `/data/projects/${this.projectId}/table/${tableName}/import`, { formData: fd });
+  }
+
+  // Returns `Content-Type: text/csv`, but note: _request's JSON-only parsing
+  // (res.json()) can't read it - callers wanting the actual CSV need a raw
+  // fetch of this path, not this method's `.body`.
+  //
+  // NOT WHAT ITS NAME SUGGESTS. Verified 2026-08-06 with a raw-text fetch:
+  // this returns a CANNED TEMPLATE, unrelated to the real table.
+  //   - A NONEXISTENT table: 200, body is five blank lines ("\n\n\n\n\n").
+  //   - A real table with declared columns (name, age): 200, but the header
+  //     is "text,name,age" - a "text" column that was never declared - and
+  //     every row is "sample text","sample text",<random int>.
+  //   - The SAME table AFTER importing real rows (alice/30, bob/40): still
+  //     the exact same synthetic "sample text"/random-int pattern. Real data
+  //     never appears.
+  // So this does not reflect the table's actual columns or content in any
+  // observed case - it looks like a fixed example generator, keyed on
+  // nothing we varied. PT-13 in the source doc expects real column names as
+  // the header; that expectation does not hold as observed.
+  getTableSample(tableName) {
+    return this._request("GET", `/data/projects/${this.projectId}/table/${tableName}/sample`);
+  }
+
+  // Requires the FULL column body, not a partial patch - verified 2026-08-06.
+  // Sending only { displayName } fails: 400 "Class discriminator was missing
+  // ... polymorphic scope of 'SerColumnType'" (dataType is the discriminator
+  // and is required even though it isn't changing). Send the complete shape:
+  // { name, dataType, displayName, defaultValue, isNotNull, isUnique }.
+  updateInternalTableColumn(tableName, columnName, column) {
+    return this._request("PUT", `/data/projects/${this.projectId}/table/${tableName}/columns/${columnName}`, {
+      body: column,
+    });
+  }
+
+  // ---- Peaka BI Table (bitable) ----
+  // Same shape as Peaka Table above, under /bitable/ instead of /table/, with
+  // real differences measured 2026-08-06:
+  //   - No JSON column type - same as Peaka Table, see addInternalTableColumns.
+  //   - No import/sample routes exist at all (both generic 404 - confirmed
+  //     both ad hoc and again as part of this suite's Phase A probes).
+  //   - No row-level write endpoint of ANY kind was found (also probed
+  //     /rows, /data, /records, /insert, /values - all generic 404). As of
+  //     this writing there is no known way to put data into a BI Table
+  //     through the Partner API.
+  //   - create() silently STRIPS ALL UNDERSCORES from the table name -
+  //     "e2e_test_underscore_probe" is stored as "e2etestunderscoreprobe".
+  //     Peaka Table preserves the name unchanged. Always track/delete the
+  //     NAME THE RESPONSE RETURNS, never the name you sent - see
+  //     helpers/withTable.js.
+  //   - THIS CAUSES REAL COLLISIONS, not just cosmetic renaming: creating
+  //     "e2e_auto_a_b" then "e2e_auto_ab" both return 200 with the identical
+  //     tableName ("eautoab"). The second create does not error as a
+  //     duplicate - it silently succeeds against the same underlying table.
+  //     Two scenario names that differ only by underscore placement are the
+  //     same table.
+  createBiTable(tableName) {
+    return this._request("POST", `/data/projects/${this.projectId}/bitable/${tableName}`);
+  }
+
+  listBiTables() {
+    return this._request("GET", `/data/projects/${this.projectId}/bitable`);
+  }
+
+  deleteBiTable(tableName) {
+    return this._request("DELETE", `/data/projects/${this.projectId}/bitable/${tableName}`);
+  }
+
+  // Same shape as addInternalTableColumns, minus JSON: a JSON dataType is
+  // rejected with 400 "No enum constant
+  // com.peaka.gateway.model.ColumnRequest.ColumnType.JSON" - functionally
+  // correct per the docs, but the message leaks an internal Java class name
+  // to the API consumer.
+  //
+  // TWO SEPARATE BUGS HERE, verified independent 2026-08-06 - don't
+  // conflate them:
+  //
+  // (1) COLUMN NAMES ARE STRIPPED OF UNDERSCORES, exactly like table names:
+  //     "col_a" is stored as "cola". Only fires when the name actually
+  //     contains an underscore - "status" stays "status".
+  //
+  // (2) displayName IS ALWAYS OVERWRITTEN with the column's own name,
+  //     whatever that name ends up being. This fires REGARDLESS of
+  //     underscores: a column named "flag" sent with displayName
+  //     "Flag Label" stores displayName "flag". Bug (1) is not involved -
+  //     it just mangles the name first when one has underscores, which is
+  //     what makes the two look like one bug.
+  //
+  // Both are universal across all 8 supported types (VARCHAR/BIGINT/
+  // BOOLEAN/DECIMAL/TIMESTAMP/DATE/UUID/TIME) - not a VARCHAR quirk.
+  // Peaka Table's addInternalTableColumns respects displayName correctly
+  // for the same column names and values, so this is BI-Table-specific.
+  //
+  // Every BI Table also carries MORE system columns than Peaka Table:
+  // _id, _version, _created_time, _created_by, _last_modified_time,
+  // _last_modified_by, _session, _operation, and a non-underscored "text"
+  // column that appears to be a default/example column, not something you
+  // declared. Filter these out of any "columns match what I added" check.
+  addBiTableColumns(tableName, columns) {
+    return this._request("POST", `/data/projects/${this.projectId}/bitable/${tableName}/columns`, { body: columns });
+  }
+
+  listBiTableColumns(tableName) {
+    return this._request("GET", `/data/projects/${this.projectId}/bitable/${tableName}/columns`);
+  }
+
+  // Verified working normally - deleted column disappears from the list and
+  // SELECT of it 4xxs with a clear "cannot be resolved" message. Unaffected
+  // by the displayName issue below.
+  deleteBiTableColumn(tableName, columnName) {
+    return this._request("DELETE", `/data/projects/${this.projectId}/bitable/${tableName}/columns/${columnName}`);
+  }
+
+  // Same full-body requirement as updateInternalTableColumn - see its
+  // comment. BUT THE DISPLAYNAME CHANGE DOES NOT PERSIST, verified
+  // 2026-08-06 (checked again after a 3s wait, ruling out propagation lag,
+  // and again across all 8 column types - universal, not type-specific):
+  // this returns 200 with a response body that ECHOES the requested
+  // displayName as if it worked, but a subsequent listBiTableColumns still
+  // shows the old value. The response lies about what happened. Peaka
+  // Table's updateInternalTableColumn genuinely persists - this is
+  // BI-Table-specific.
+  updateBiTableColumn(tableName, columnName, column) {
+    return this._request("PUT", `/data/projects/${this.projectId}/bitable/${tableName}/columns/${columnName}`, {
+      body: column,
+    });
   }
 
   // ---- SQL ----

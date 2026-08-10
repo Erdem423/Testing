@@ -1,6 +1,6 @@
 /**
  * Deletes everything a test run created, in dependency order:
- * cache -> query -> internal table -> catalog -> connection. A catalog can't
+ * cache -> query -> internal table -> bi table -> catalog -> connection. A catalog can't
  * be deleted while a cache depends on it, and a connection can't be deleted
  * while a catalog depends on it.
  *
@@ -74,6 +74,7 @@ async function cleanup(ctx, log = console.log) {
   // still listed after its only query was gone.
   await deleteEach(ctx.createdQueryFolderIds, "query folder", (id) => ctx.client.deleteQueryFolder(id));
   await deleteEach(ctx.createdInternalTableNames, "internal table", (n) => ctx.client.deleteInternalTable(n));
+  await deleteEach(ctx.createdBiTableNames, "bi table", (n) => ctx.client.deleteBiTable(n));
 
   for (const catalogId of [...ctx.createdCatalogIds].reverse()) {
     try {
