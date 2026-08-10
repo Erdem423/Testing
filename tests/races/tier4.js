@@ -1,5 +1,6 @@
 const { assertStatus, assertStatusIn, assert } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
+const { assertNoServerError } = require("../../helpers/serverError");
 const { duringSync, waitForSettled, sleep } = require("../../helpers/raceWindow");
 const { pollCacheUntilComplete } = require("../../helpers/pollCacheUntilComplete");
 
@@ -73,7 +74,9 @@ async function runTier4Races(ctx) {
     let last = null;
     for (let attempt = 1; attempt <= 40; attempt++) {
       const res = await ctx.client.getExport(id);
-      assert(res.status < 500, `getExport (${label}) returned ${res.status} - a server error`);
+      assertNoServerError(res, "getExport", {
+        message: `getExport (${label}) returned ${res.status} - a server error`,
+      });
       last = res.body;
       if (res.status === 200 && EXPORT_TERMINAL.includes(String(res.body.status).toUpperCase())) break;
       await sleep(3000);
@@ -335,7 +338,9 @@ async function runTier4Races(ctx) {
     }
 
     const snapshot = await ctx.client.executeQuery({ id: materializedId }, "SIMPLE");
-    assert(snapshot.status < 500, `Reading the materialized snapshot returned ${snapshot.status}`);
+    assertNoServerError(snapshot, "Reading the materialized snapshot", {
+      message: `Reading the materialized snapshot returned ${snapshot.status}`,
+    });
 
     if (snapshot.status !== 200) {
       console.log(`materialized snapshot could not be read (${snapshot.status}) - reported, not asserted`);
