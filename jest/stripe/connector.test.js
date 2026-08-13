@@ -39,7 +39,7 @@
  * Jest's scheduler to get wrong.
  *
  * SETUP: .env needs PEAKA_API_KEY, PEAKA_PROJECT_ID, STRIPE_TEST_TOKEN,
- * PEAKA_CATALOG_ID, PEAKA_SCHEMA_NAME, optionally NUM_CUSTOMERS.
+ * PEAKA_CATALOG_ID, PEAKA_SCHEMA_NAME.
  *
  * RUN:
  *   npm test                 - run once
@@ -51,6 +51,8 @@
 
 const { loadDotEnv, checkCredentials } = require("../../helpers/env");
 const { PeakaClient } = require("../../helpers/peakaClient");
+const { StripeClient } = require("../../helpers/stripeClient");
+const { gateFor } = require("../../helpers/preflight");
 const { cleanup } = require("../../helpers/cleanup");
 const { withScenario } = require("../../helpers/stepReporter");
 const { runCatalogSchemaDiscovery } = require("../../tests/stripe/b-catalog-schema");
@@ -72,22 +74,26 @@ function buildFreshCtx() {
 
   return {
     client: new PeakaClient({ apiKey, projectId }),
+    // C compares Peaka's cached customer count against Stripe's own count
+    // rather than against a number in .env, so it needs a Stripe client.
+    stripe: new StripeClient({ token: stripeToken }),
     stripeToken,
     catalogId,
     catalogNameFromConfig: process.env.PEAKA_CATALOG_NAME || null,
     schemaName,
-    expectedCustomerCount: parseInt(process.env.NUM_CUSTOMERS || "500", 10),
-    // Deliberately a SEPARATE env var from NUM_CUSTOMERS, not another parse
-    // of the same one - this is what C's live (uncached) count checks assert
-    // against, as a passing regression test for the confirmed ~100-row
-    // COUNT(*) cap (see tests/stripe/c-data-and-cache.js), rather than the
-    // real customer count. Measured on all four tables, not just customers.
+    // The confirmed ~100-row COUNT(*) cap, asserted as a PASSING regression
+    // test (see tests/stripe/c-data-and-cache.js). A product constant, not
+    // account data - which is why it stayed when NUM_CUSTOMERS was removed for
+    // tying the suite to one person's Stripe account. Measured on all four
+    // tables, not just customers.
     expectedCustomerCountNonCache: parseInt(process.env.EXPECTED_CUSTOMER_COUNT_NON_CACHE || "100", 10),
     createdConnectionIds: [],
     createdCatalogIds: [],
     createdCacheIds: [],
     createdQueryIds: [],
     createdInternalTableNames: [],
+    createdBiTableNames: [],
+    createdStripeCustomerIds: [],
   };
 }
 
@@ -104,14 +110,20 @@ function requireCredentials() {
   }
 }
 
+// B only reads metadata (schemas, tables, columns), so it needs no seeded
+// rows and is deliberately ungated.
 test.concurrent("B: Catalog & Schema Discovery", async () => {
   requireCredentials();
   ctxB = buildFreshCtx();
   await withScenario("B: Catalog & Schema Discovery", () => runCatalogSchemaDiscovery(ctxB));
 });
 
-test.concurrent(
-  "C: Data Correctness & Cache Behavior",
+// GATED. Every assertion in C is about row counts and distributions, so an
+// empty catalog makes it meaningless rather than failing usefully. gateFor
+// rather than gatedTest because these run concurrently - see helpers/preflight.js.
+const gC = gateFor("C: Data Correctness & Cache Behavior", "stripe.customers");
+(gC.ok ? test.concurrent : test.concurrent.skip)(
+  gC.name,
   async () => {
     requireCredentials();
     ctxC = buildFreshCtx();
@@ -124,7 +136,12 @@ test.concurrent(
   300000
 );
 
-test.concurrent("F: Error Handling & Edge Cases", async () => {
+// GATED on refunds specifically: most of F is negative-path testing that needs
+// no data, but its pagination step reads two pages of 20 from `refunds`. That
+// step used to skip itself silently when the table was empty, passing while
+// verifying nothing - the exact soft-pass this gate replaces.
+const gF = gateFor("F: Error Handling & Edge Cases", "stripe.refunds");
+(gF.ok ? test.concurrent : test.concurrent.skip)(gF.name, async () => {
   requireCredentials();
   ctxF = buildFreshCtx();
   await withScenario("F: Error Handling & Edge Cases", () => runErrorHandling(ctxF));

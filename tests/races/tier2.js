@@ -1,6 +1,6 @@
 const { assertStatus, assertStatusIn, assert } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
-const { duringSync, duringExport, simultaneously, waitForSettled, sleep } = require("../../helpers/raceWindow");
+const { duringSync, duringExport, simultaneously, sleep } = require("../../helpers/raceWindow");
 
 const BAD_TOKEN = "sk_test_deliberately_invalid_for_race_testing";
 

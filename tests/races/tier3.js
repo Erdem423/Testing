@@ -17,9 +17,14 @@ const META_TERMINAL = ["NOT_ACTIVE", "COMPLETED", "FAILED", "STUCK"];
  * Tier 3 concurrency conflicts - metadata races and parallel load.
  *
  * NON-DESTRUCTIVE, unlike Tier 2: nothing here deletes a catalog or
- * connection. Metadata refreshes run against a THROWAWAY catalog so they
- * cannot disturb B and C reading the shared one, and the parallel-query step
- * is read-only.
+ * connection it did not create. EVERY step that writes - the metadata
+ * refreshes and the cache sync in 3.8b - runs against its own throwaway
+ * catalog, so none of them can disturb B and C reading the shared one. The
+ * parallel-query step is read-only and deliberately uses the shared catalog.
+ *
+ * That was not always true: 3.8b cached `customers` into PEAKA_CATALOG_ID
+ * until 2026-08-03, which made this paragraph a claim the code did not honour.
+ * If you add a step here that writes, give it a throwaway catalog too.
  *
  * The 20-parallel-query step also covers the instructor's scenario 19.
  */
@@ -138,8 +143,27 @@ async function runTier3Races(ctx) {
   // prediction rather than assume it, since the *row-query* equivalent of this
   // is a confirmed bug.
   await step("listTables while a table is being cached (predicted safe)", async () => {
+    // USES A THROWAWAY CATALOG, like every other step in this file.
+    //
+    // It used to cache `customers` into the shared PEAKA_CATALOG_ID, which is
+    // exactly the hazard Tier 1 was moved off: an interruption between the
+    // create and the delete below leaves `customers` cached in the catalog C
+    // depends on. That is not hypothetical - a dashboard server died mid-run
+    // once and left precisely that state behind, after which C skipped its
+    // whole live phase, silently dropping the 100-row cap regression.
+    //
+    // It also made this file's own header untrue, which claimed Tier 3 could
+    // not disturb B and C. An independent catalog on its own Stripe connection
+    // holds the same `customers` rows and syncs in the same ~37s, so the race
+    // window is unchanged.
+    const raceCatalogId = await throwawayCatalog("cache-sync");
+    assert(
+      String(raceCatalogId) !== String(ctx.catalogId),
+      "This step must never cache into the shared PEAKA_CATALOG_ID"
+    );
+
     const cache = await ctx.client.createCache({
-      catalogId: ctx.catalogId,
+      catalogId: raceCatalogId,
       schemaName: ctx.schemaName,
       tableName: "customers",
     });
@@ -148,8 +172,8 @@ async function runTier3Races(ctx) {
     ctx.createdCacheIds.push(cacheId);
 
     const outcome = await duringSync(ctx, cacheId, async () => {
-      const tables = await ctx.client.listTables(ctx.catalogId, ctx.schemaName);
-      const cols = await ctx.client.listColumns(ctx.catalogId, ctx.schemaName, "customers");
+      const tables = await ctx.client.listTables(raceCatalogId, ctx.schemaName);
+      const cols = await ctx.client.listColumns(raceCatalogId, ctx.schemaName, "customers");
       return { tables, cols };
     });
 

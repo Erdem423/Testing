@@ -37,6 +37,7 @@ const fs = require("fs");
 const { runCLI } = require("jest");
 const { loadDotEnv, checkCredentials } = require("./helpers/env");
 const reporterBus = require("./jest/reporterBus");
+const { SIDECAR_DIR: SERVER_ERROR_DIR } = require("./helpers/serverError");
 
 loadDotEnv();
 
@@ -184,6 +185,16 @@ app.get("/api/run-stream", async (req, res) => {
   // Tells helpers/stepReporter.js where to POST live step events. Set only
   // for dashboard-launched runs, so a plain `npm test` stays a no-op.
   process.env.PEAKA_STEP_REPORT_URL = `http://127.0.0.1:${PORT}/api/step-event`;
+
+  // Clear per-run server-error records. jest.globalSetup.js does this too, but
+  // the runCLI config below deliberately does NOT include globalSetup - so
+  // without this line a dashboard run would leave records behind that the next
+  // `npm test` would report as phantom warnings.
+  try {
+    fs.rmSync(SERVER_ERROR_DIR, { recursive: true, force: true });
+  } catch (_) {
+    // Reporting hygiene only - never worth failing a run over.
+  }
   try {
     await runCLI(
       {

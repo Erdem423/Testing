@@ -140,6 +140,13 @@ Credentials never reach the browser — `server.js` reads `.env` itself and send
 | **L: Metadata Refresh Endpoints** | Trigger a metadata refresh and poll it to a terminal state |
 | **M: Cache Management Endpoints** | Cache settings, batch creation, all three all-statuses variants, execution history, trigger/cancel for incremental and full refresh |
 | **N: Materialized Query Endpoints** | Create, poll, list, refresh, cancel, recovery, and the `inputQueryRefId` variant |
+| **O: Data Freshness** | Adds a customer **in Stripe**, proves it isn't visible in the cache, refreshes, and proves it is — then deletes it and checks the removal is reflected too |
+
+> ⚠️ **`O` is the only scenario that writes to Stripe.** It creates one customer and deletes it again, so
+> your sandbox's row counts are unchanged after a run. The id is tracked the instant it exists and
+> [helpers/cleanup.js](helpers/cleanup.js) removes Stripe customers *before* any Peaka resource — a
+> leftover customer would permanently shift the counts `C` asserts against. `helpers/stripeClient.js`
+> refuses any key that isn't `sk_test_`.
 
 A per-step breakdown is in [STRIPE_TEST_SCENARIOS.md](STRIPE_TEST_SCENARIOS.md).
 

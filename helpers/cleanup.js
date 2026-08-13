@@ -40,6 +40,17 @@ async function cleanup(ctx, log = console.log) {
     }
   }
 
+  // STRIPE FIRST, and deliberately before any Peaka resource.
+  //
+  // This is the only upstream state the suite creates, and it is the only
+  // leftover that does lasting damage: a stray customer permanently shifts the
+  // row counts C asserts against, whereas a leftover Peaka cache is merely
+  // debris. Running it first means a Stripe-side failure cannot prevent the
+  // Peaka cleanup below - deleteEach never throws.
+  if (ctx.stripe && ctx.createdStripeCustomerIds) {
+    await deleteEach(ctx.createdStripeCustomerIds, "stripe customer", (id) => ctx.stripe.deleteCustomer(id));
+  }
+
   for (const cacheId of [...ctx.createdCacheIds].reverse()) {
     try {
       const res = await ctx.client.deleteCache(cacheId);
@@ -57,6 +68,11 @@ async function cleanup(ctx, log = console.log) {
   }
 
   await deleteEach(ctx.createdQueryIds, "query", (id) => ctx.client.deleteQuery(id));
+  // AFTER the queries, deliberately: a folder still holding queries may refuse
+  // to delete. Folders are tracked separately because deleting a query does not
+  // remove the folder it was moved into - verified 2026-08-03, the folder was
+  // still listed after its only query was gone.
+  await deleteEach(ctx.createdQueryFolderIds, "query folder", (id) => ctx.client.deleteQueryFolder(id));
   await deleteEach(ctx.createdInternalTableNames, "internal table", (n) => ctx.client.deleteInternalTable(n));
 
   for (const catalogId of [...ctx.createdCatalogIds].reverse()) {

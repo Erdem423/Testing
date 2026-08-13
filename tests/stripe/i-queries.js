@@ -10,12 +10,8 @@ const { step } = require("../../helpers/step");
  * the cheapest scenario in the suite.
  *
  * The project contains unrelated pre-existing queries (5 at time of writing),
- * so every assertion looks for OUR query by id rather than asserting on list
- * length.
- *
- * NOT covered here (request shapes couldn't be determined from the reference):
- * executing a saved query by id or name, and creating a MATERIALIZED query -
- * which is why the whole Materialized Queries group is absent.
+ * and at least one pre-existing query FOLDER, so every assertion looks for OUR
+ * resources by id rather than asserting on list length.
  */
 async function runQueries(ctx) {
   const displayName = `e2e-auto-query-${ctx.runTag}`;
@@ -63,6 +59,58 @@ async function runQueries(ctx) {
     assertEqual(after.body.inputQuery, updatedSql, "inputQuery after update");
     // Omitted fields should keep their values, per the reference.
     assertEqual(after.body.displayName, displayName, "displayName should survive a partial update");
+  });
+
+  // TWO DOCS DIVERGENCES IN ONE ENDPOINT, both found by probing before writing
+  // this (2026-08-03). The reference says `PUT /api/queries/{queryId}/path`:
+  //   - the verb is PATCH; PUT and POST both return 405 Method Not Allowed
+  //   - the path is project-scoped, like every other query route; the bare
+  //     /api/queries/... form returns the generic framework 404
+  // The 405-versus-404 distinction is what identified the route as real but the
+  // verb as wrong, and is worth remembering as a probing technique.
+  //
+  // THE PATH IS READ BACK, not inferred from the status. A 200 that silently
+  // ignored the body is a real failure mode here, not a hypothetical - it is
+  // exactly what updateCacheSettings does with a malformed schedule.
+  await step("move the query to a folder path and back", async () => {
+    const before = await ctx.client.getQuery(queryId);
+    assertStatus(before, 200, "getQuery (before the move)");
+    assertEqual(before.body.path, "/", "a new query starts at the root path");
+    assertEqual(before.body.folderId, null, "a new query has no folder");
+
+    const target = `/e2e-auto-path-${ctx.runTag}`;
+    const moved = await ctx.client.updateQueryPath(queryId, target);
+    assertStatus(moved, 200, "updateQueryPath");
+
+    const afterMove = await ctx.client.getQuery(queryId);
+    assertStatus(afterMove, 200, "getQuery (after the move)");
+    assertEqual(afterMove.body.path, target, "path after the move");
+    // MOVING TO A PATH THAT DOESN'T EXIST CREATES A FOLDER, and that folder
+    // outlives the query - deleting the query leaves it behind. Track it now so
+    // cleanup removes it even if a later step throws.
+    assert(
+      afterMove.body.folderId,
+      `Expected a folderId once the query was moved into '${target}', got ${JSON.stringify(afterMove.body.folderId)}`
+    );
+    ctx.createdQueryFolderIds.push(afterMove.body.folderId);
+    console.log(`moved query to ${target} (folder ${afterMove.body.folderId} was created for it)`);
+
+    // The folder is now listable. Asserting OUR folder specifically, since the
+    // project holds unrelated pre-existing ones.
+    const folders = await ctx.client.listQueryFolders();
+    assertStatus(folders, 200, "listQueryFolders");
+    const items = (folders.body && folders.body.items) || [];
+    assert(
+      items.some((f) => f.id === afterMove.body.folderId && f.path === target),
+      `Folder ${afterMove.body.folderId} (${target}) not found in listQueryFolders (${items.length} returned)`
+    );
+
+    // Move it back, so the query is left as it was found.
+    const restored = await ctx.client.updateQueryPath(queryId, "/");
+    assertStatus(restored, 200, "updateQueryPath (back to root)");
+    const afterBack = await ctx.client.getQuery(queryId);
+    assertEqual(afterBack.body.path, "/", "path after moving back");
+    assertEqual(afterBack.body.folderId, null, "folderId is cleared when moving back to the root");
   });
 
   // The execute endpoint takes a oneOf with four branches; the reference

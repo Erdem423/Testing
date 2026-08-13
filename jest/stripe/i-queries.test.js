@@ -12,12 +12,16 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
+const { gatedTest } = require("../../helpers/preflight");
 const { runQueries } = require("../../tests/stripe/i-queries");
 
 let ctx = null;
 
-test(
+// GATED: one step runs a saved query and asserts it returns at least one row,
+// which needs the underlying table to actually hold data.
+gatedTest(
   "I: Saved Query Endpoints",
+  "stripe.customers",
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();

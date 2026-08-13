@@ -12,12 +12,17 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
+const { gatedTest } = require("../../helpers/preflight");
 const { runExports } = require("../../tests/stripe/k-exports");
 
 let ctx = null;
 
-test(
+// GATED: the table-export step asserts an exact row count on `charges`, and an
+// export of an empty table fails outright ("Trino-native export produced no
+// files") rather than producing an empty file - see peakaClient.createTableExport.
+gatedTest(
   "K: Export Endpoints",
+  "stripe.charges",
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();

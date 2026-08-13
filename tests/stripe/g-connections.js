@@ -1,5 +1,6 @@
 const { assertStatus, assertStatusIn, assert, assertEqual } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
+const { sweepStaleConnections } = require("../../helpers/sweepConnections");
 
 /**
  * Connection endpoints: create -> list -> get -> update -> delete, plus the
@@ -22,6 +23,18 @@ const { step } = require("../../helpers/step");
 async function runConnections(ctx) {
   const name = `e2e-auto-conn-${ctx.runTag}`;
   let connectionId = null;
+
+  // CLOSES THE ONE GAP cleanup.js cannot: it deletes only what the current run
+  // recorded, so a process killed between creating a connection and afterAll
+  // strands that connection with nothing able to find it later. Sweeping by
+  // prefix on the way IN makes the leak self-healing instead of permanent.
+  //
+  // Age-guarded rather than a bare prefix match, because these names embed
+  // runTag - deleting everything matching the prefix would remove a LIVE
+  // connection belonging to a concurrent run. See helpers/sweepConnections.js.
+  await step("sweep abandoned connections from killed runs", async () => {
+    await sweepStaleConnections(ctx, "e2e-auto-conn", (line) => console.log(line));
+  });
 
   await step("create a connection", async () => {
     const res = await ctx.client.createConnection({
@@ -65,6 +78,47 @@ async function runConnections(ctx) {
     }
   });
 
+  // A CREDENTIAL-LESS CONNECTION MUST NEVER BE ACCEPTED. If Peaka created one,
+  // the project would hold a connection that can authenticate to nothing, and
+  // every downstream failure would surface far from its cause.
+  //
+  // All three statuses were MEASURED before this was written (2026-08-03) and
+  // are pinned exactly - deliberately not the wide `[200, 400, 401, 422]` set
+  // the invalid-token step above still carries. That set is parked for a later
+  // pass, not a precedent to copy.
+  //
+  // The two error shapes are asserted separately because the distinction is
+  // real and worth preserving: a credential that is PRESENT but unusable is
+  // rejected by credential validation, while a MISSING credential is rejected
+  // earlier, by schema validation. A connector that collapsed those into one
+  // generic error would be harder to diagnose against.
+  await step("a connection with no usable credential is rejected", async () => {
+    const attempts = [
+      { label: "empty credential object", body: { credential: {} }, expect: "INVALID_CREDENTIALS" },
+      { label: "empty token string", body: { credential: { token: "" } }, expect: "INVALID_CREDENTIALS" },
+      { label: "credential omitted entirely", body: {}, expect: "Bad Request" },
+    ];
+
+    for (const attempt of attempts) {
+      const res = await ctx.client.createConnection({
+        name: `e2e-auto-conn-nocred-${ctx.runTag}`,
+        type: "stripe",
+        ...attempt.body,
+      });
+
+      // Defensive: if Peaka ever starts accepting these, the connection is real
+      // and must be cleaned up. Tracked before asserting, so a failure here
+      // cannot strand it.
+      if (res.status === 200 && res.body && res.body.id) {
+        ctx.createdConnectionIds.push(res.body.id);
+      }
+
+      assertStatus(res, 400, `createConnection with ${attempt.label}`);
+      assertEqual(res.body.error, attempt.expect, `error code for ${attempt.label}`);
+      console.log(`  ${attempt.label} -> 400 ${res.body.error}`);
+    }
+  });
+
   await step("list connections includes the new one", async () => {
     const res = await ctx.client.listConnections();
     assertStatus(res, 200, "listConnections");
@@ -104,6 +158,37 @@ async function runConnections(ctx) {
         `getConnection response contains a '${marker}' prefixed value - looks like an unmasked credential: ${serialized.slice(0, 300)}`
       );
     }
+  });
+
+  // "Detail" RETURNS LESS THAN getConnection, not more - which is the only
+  // interesting thing about it, and the reason this step compares the two
+  // rather than just asserting a 200. Measured: `{ type }` alone, against
+  // getConnection's id/name/type/url.
+  //
+  // The masking scan is repeated here deliberately. `G` already proves
+  // getConnection never echoes the Stripe key, but that assertion says nothing
+  // about a SEPARATE endpoint on the same resource - and "detail" is exactly
+  // the kind of name that would justify returning more. Checking the wrong
+  // endpoint is how a credential leak would hide in plain sight.
+  await step("connection detail returns no more than the plain read, and no credential", async () => {
+    const detail = await ctx.client.getConnectionDetail(connectionId);
+    assertStatus(detail, 200, "getConnectionDetail");
+    assert(detail.body && typeof detail.body === "object", `Expected an object, got: ${JSON.stringify(detail.body)}`);
+    assertEqual(detail.body.type, "stripe", "connection type from the detail endpoint");
+
+    const serialized = JSON.stringify(detail.body);
+    assert(
+      !serialized.includes(ctx.stripeToken),
+      "getConnectionDetail echoed the raw Stripe token - credentials must never be returned"
+    );
+    for (const marker of ["sk_test_", "sk_live_", "rk_test_", "rk_live_"]) {
+      assert(
+        !serialized.includes(marker),
+        `getConnectionDetail returned a '${marker}' prefixed value - looks like an unmasked credential: ` +
+          `${serialized.slice(0, 300)}`
+      );
+    }
+    console.log(`connection detail: ${serialized}`);
   });
 
   await step("update the connection's name", async () => {
