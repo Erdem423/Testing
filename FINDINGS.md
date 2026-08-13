@@ -55,8 +55,24 @@ cacheable or gain Stripe's statistics limitation.
 | 12 | **BI Table's `displayName` is never respected**, at creation or update, across all 8 column types — the update endpoint's response actively lies about it | Medium | Open, asserted as a pinned deviation |
 | 13 | **BI Table names collide after underscore-stripping** — two different requested names silently write to the same table | Medium | Open, asserted |
 | 14 | JSON columns are rejected for **both** internal table kinds, contradicting the spec's own claim that Peaka Table supports them | Medium | Open |
-| 15 | `getTableSample` returns a canned template unrelated to the real table, before or after real data exists | Low | Open |
+| 15 | `getTableSample` is a **template generator and it conforms to the spec** — including the import round trip. Sole deviation: the header carries an undeclared `text` column. Required fixing a client bug (silent `null` body) to measure at all | Low | Conforms; asserted as a regression test |
 | 16 | Trino requires `OFFSET` before `LIMIT`; the reverse order (valid Postgres/MySQL) is a syntax error | Low | Documented, worth knowing when porting SQL |
+| 18 | **Import validates VALUES strictly and atomically, but MAPPINGS not at all** — same endpoint, opposite rigor. The strict half is asserted so it cannot quietly relax | — | Verified working, pinned as a regression test |
+| 19 | The 100-row cap does **not** apply to internal tables — a fifth confirmation it is Stripe-connector-specific | — | Verified working |
+| 20 | **CSV import appends unconditionally and never deduplicates** — combined with 9 and 11, a Peaka Table can only ever *grow*; a mistaken row can never be corrected or removed | **High** | Open, asserted |
+| 21 | Deleting a table is a genuine hard drop of data **and** declared schema, and ids are never reused | — | Verified working, pinned as a regression test |
+| 22 | **`isUnique` and `isNotNull` are silently discarded at column creation** — sent `true`, stored `false`, with a `200` in between. `defaultValue` round-trips correctly | **High** | Open, asserted |
+| 23 | A Peaka Table and BI Table sharing a name stay fully isolated, including on delete — and the spec's own version of this test never creates the collision | — | Verified working, pinned as a regression test |
+| 24 | **The 100-row cap propagates through federated joins** — an aggregate over a join involving Stripe is computed on 100 of 505 rows and looks like a valid answer | **High** | Open, asserted |
+| 25 | A saved query **silently re-binds** to a table recreated under the same name; dropping a column or the table breaks execution with a clean `4xx` but never the stored query | Medium | Open, asserted |
+| 26 | An internal-table export is **uncapped** (7th confirmation) but carries all 8 system columns, so an exported file is not directly re-importable — unlike the sample endpoint's output | Low | Open, asserted |
+| 27 | **A materialized query over an internal table holds no snapshot** — appended rows appear immediately, contradicting the docs' "slightly stale between refreshes". The exact inverse of finding 2 | Medium | Open, asserted |
+| 28 | **A table comment breaks `createCache`** — the description is JSON-parsed, so a commented table gets a parser error with `errorCode: null` instead of its rejection. Returned as `400`, so the 5xx channel never sees it | Medium | Open, reported not asserted |
+| 29 | **BI Table is writable in Studio but read-only through the Partner API** — the docs promise row-by-row inserts/updates/deletes and bulk insertion; the API offers none, while every read path works. Corrects the earlier "no write path at all" | **High** | Open, asserted |
+| 30 | **`createCache` cannot refuse an internal table** — it dies looking up a mangled internal identifier with `errorCode: null`, for both table kinds. Second cause today of this endpoint eating its own error code | Medium | Open, asserted |
+| 31 | Adding a column that already exists returns the **raw PostgreSQL exception** — internal schema name, generated SQL, PL/pgSQL function names and arguments | Low | Open, reported not asserted |
+| 32 | MongoDB's `_id` is **absent from `listColumns` and `SELECT *` entirely**, and the obvious `WHERE _id = '<hex>'` filter is rejected on a type mismatch. A working but undocumented path exists (`CAST(_id AS VARCHAR)` / `objectid('<hex>')`) | Medium | Open, asserted |
+| 33 | `getTableStatistics` is implemented for **Postgres only** — the two-connector pattern ("database connectors get it") breaks on a third; MongoDB gets Stripe's exact `400` | Low | Not a bug; corrects an over-generalization, asserted |
 
 Three endpoint paths in this repo's client were also wrong; see [Corrected endpoint paths](#corrected-endpoint-paths).
 
@@ -333,7 +349,7 @@ absence of any alternative — see finding 11.
 ## 10. CSV import silently accepts a bad mapping and writes `NULL`
 
 The spec's own rule expects a malformed import to be rejected outright, with **zero** rows landing
-(`PT-12`). Measured directly: three of its four "make the import fail" cases do fail cleanly. The fourth
+(its `PT-12`). Measured directly: three of its four "make the import fail" cases do fail cleanly. The fourth
 does not.
 
 Mapping a CSV import column to a **CSV header that doesn't exist in the file** does not error. It
@@ -352,7 +368,8 @@ fail as expected — it is the one case where the spec's blanket assumption ("al
 empty") is actively wrong, and the wrong answer is the dangerous one: data appears to have imported
 successfully while quietly missing a field.
 
-Asserted in `PT-12` as the real, measured behaviour — not the spec's assumption — so if Peaka ever starts
+Asserted in *A bad mapping silently writes NULL instead of failing* as the real, measured behaviour —
+not the spec's assumption — so if Peaka ever starts
 rejecting this case, the test goes red and says exactly that.
 
 Two secondary quality issues, logged but not hard-asserted (message wording isn't something to pin): the
@@ -377,7 +394,7 @@ PATCH  /table/{t}/data/{id}   -> 404
 
 All generic 404s — no such route exists, under any of the six shapes tried. There is currently **no way
 to edit or delete a single existing row** in a Peaka Table through the Partner API. Implemented as
-`PT-08: point-edit UPDATE/DELETE (capability gap)` — not a feature test, a pinned absence: it asserts the
+*No row-level UPDATE or DELETE exists anywhere* — not a feature test, a pinned absence: it asserts the
 rejection is real (SQL-level and REST-level) and that the row is genuinely untouched afterward, not just
 that the API said no. If Peaka ships a row-edit path later, one of these assertions starts returning
 something other than a clean rejection and the test goes red to say so.
@@ -414,7 +431,8 @@ Anyone relying on the API response to confirm a rename succeeded would be fooled
 independent read reveals it did not happen. Peaka Table's equivalent (`updateInternalTableColumn`) works
 correctly for the same inputs, confirming this is BI-Table-specific rather than a general limitation.
 
-Asserted in `BT-06`, deliberately inverted from what `PT-04` checks for Peaka Table: it asserts the
+Asserted in *BI Table silently ignores displayName on every column change*, deliberately inverted from
+what the Peaka Table column scenario checks: it asserts the
 `displayName` **stays unchanged** after an update, with a comment noting that if this ever starts
 passing the other way, Peaka has fixed it and the assertion needs flipping.
 
@@ -444,7 +462,7 @@ and the leftover-sweep logic checks both the literal and stripped forms.
 
 One open question this raises but does not answer: whether the same collision reaches **data**, not just
 identifiers. It could not be tested — Peaka Table's data survives underscores intact (confirmed: a value
-like `"has_underscore"` round-trips through CSV import unchanged), but BI Table has no write path at all
+like `"has_underscore"` round-trips through CSV import unchanged), but BI Table has no write path through the Partner API
 (finding 9 combined with no `import`/`sample` routes existing for `bitable`), so there is currently no way
 to check whether BI Table *values* are similarly mangled. Worth re-testing the moment a BI Table write
 path is found.
@@ -461,26 +479,64 @@ addInternalTableColumns(t, [{ name: "payload", dataType: "JSON", ... }])
 
 The identical rejection, with the identical message, that BI Table gives. The live server's column-type
 enum has no JSON member for **either** table kind — this is a live-API fact contradicting the spec's own
-documentation, not a spec typo. It blocks `PT-03` and `PT-10` (both of which include a JSON column) as
+documentation, not a spec typo. It blocks the spec's `PT-03` and `PT-10` (both of which include a JSON column) as
 literally written, for both table types. The error message itself is a secondary quality issue worth
 separate note: it leaks an internal Java class name (`com.peaka.gateway.model.ColumnRequest.ColumnType`)
 directly to the API consumer.
 
-## 15. `getTableSample` returns a canned template, not real data
+## 15. `getTableSample` is a template generator, and it mostly conforms
 
-The spec expects `PT-13` to return the table's real column names as a CSV header. Measured with a
-raw-text fetch (the JSON-only response parser in this repo's client cannot even read a `text/csv`
-response, which is itself worth knowing):
+**Read the spec before reading the table below.** The spec's `PT-13` expects `2xx` with
+`Content-Type: text/csv`, a first row carrying the table's column names as a header, **at least one
+*example* data row** ("en az 1 örnek veri satırı"), and that the returned file **is accepted when handed
+back to import as a template** — it even suggests downloading the sample and importing it as-is as
+optional further validation.
+
+That matters because it settles what the endpoint is *for*: a **template**, not a preview of real rows.
+Measured against the spec's actual criteria, Peaka **passes every one of them** — including the
+round trip, which returns `200 COMPLETED processed: 5`.
+
+**Measuring this required fixing a client bug first.** `getTableSample()` calls `_request` like every
+other method, which always tried `res.json()` — but this endpoint returns `Content-Type: text/csv`, so
+that throws and the caller silently got `body: null`, regardless of what the table actually contained.
+Confirmed through the method itself, unfixed: `null` in all four states tried. `_request` gained an
+opt-in `raw: true` mode (`res.text()` instead of `res.json()`), and `getTableSample` now uses it —
+additive, no other caller touched.
+
+Measured 2026-08-10, through the fixed method:
 
 | Table state | Response |
 |---|---|
-| Table doesn't exist | `200`, body is five blank lines |
+| Table doesn't exist | `200`, body is five blank lines (`"\n\n\n\n\n"`) |
 | Real table, declared columns `name`/`age`, zero rows | `200`, header is `text,name,age` — `text` was never declared — rows are `"sample text","sample text",<random int>` |
 | Same table, **after** importing real rows (`alice`/30, `bob`/40) | `200`, identical synthetic pattern — real data never appears |
+| A different table, declared column `city` only | `200`, header is `text,city` |
 
-In every observed case the response is disconnected from both the table's real schema and its real
-content — it looks like a fixed example generator, unaffected by anything varied in the test. `PT-13`'s
-expectation that this reflects the real table does not hold as measured.
+The generator is genuinely type-aware — every VARCHAR-typed column comes back `"sample text"`, every
+BIGINT-typed column a random integer, every DECIMAL a random decimal — and the header does track the
+table's real column names. Always exactly 5 rows, regardless of the table's real row count. Synthetic
+content is **correct behaviour** here, not a defect: the spec asked for example rows.
+
+**The one real deviation is narrow:** the header carries a leading `text` column the caller never
+declared. Peaka adds `text` to every internal table itself (see finding 19's system-column list), so it
+is a real column — but a template that hands back a column the user did not create invites them to fill
+it in without knowing what it is.
+
+**Worth knowing, though it is not a spec violation.** The spec's own suggested validation — import the
+sample as-is — succeeds, which means it appends 5 rows of `"sample text"` to the table. Inside a test
+that is harmless: the spec's cleanup step is `PtDelete`, and finding 21 confirms dropping the table
+really does purge it. For a *user* running the obvious template workflow against a real table it is less
+harmless, because finding 20 leaves no way to remove those 5 rows short of dropping the table.
+
+The mechanism is worth naming: the sample generator is careful to emit **type-valid** values, and import
+validates **strictly by type** (finding 18). Both behaviours are individually correct, and together they
+guarantee synthetic data passes validation cleanly. A sloppier generator would have been caught by the
+importer.
+
+Asserted as *The sample endpoint returns a type-aware template with example rows*, pinning: the
+nonexistent-table response exactly, the header format, the
+type-conditioned canned values, and that an unmistakable imported marker value never appears in the
+sample body.
 
 ## 16. Trino wants `OFFSET` before `LIMIT`
 
@@ -519,6 +575,558 @@ None are severe alone, but each silently breaks naive client code and several co
 | **Numeric columns come back as strings** | `SELECT amount FROM charges` returns `"15000"`, not `15000`. Any caller doing arithmetic gets string concatenation instead of addition. Asserted in `C` so that if Peaka starts returning real numbers the suite goes red and the change gets noticed |
 
 ---
+
+## 18. Import validates values strictly, and mappings not at all
+
+A prediction that turned out **wrong**, which is why it is worth recording. Finding 10 shows a bad
+*mapping* silently writes `NULL`, so the reasonable expectation was that the value-parsing path in the
+same endpoint would be equally lax — and that would have been strictly worse, since a mapping typo is a
+caller error in metadata while a bad value is real data discarded on a request that reports success.
+
+It is the opposite. Measured 2026-08-10, each bad value in its own import (a single CSV carrying all
+five stops at the first — the error even names the CSV line number):
+
+| Value | Column type | Result |
+|---|---|---|
+| `abc` | BIGINT | `400 invalid input syntax for type bigint: "abc"` |
+| `2024-13-45` | DATE | `400 date/time field value out of range: "2024-13-45"` |
+| `maybe` | BOOLEAN | `400 invalid input syntax for type boolean: "maybe"` |
+| `9999999999999999999999999` | BIGINT | `400 value "999…" is out of range for type bigint` |
+| `not-a-uuid-at-all` | UUID | `400 invalid input syntax for type uuid` |
+
+Every message **names the offending value**, and the batch form also names the line and column — the
+best error messages in this API by a wide margin, and a marked contrast to the raw SQL syntax error a
+bad mapping produces (finding 10).
+
+**The rejection is atomic.** Each CSV above began with a valid row; `COUNT(*)` is `0` afterwards, so
+nothing partial is written. That is precisely the "yarım import kabul edilmez" guarantee the source doc
+asks for — honoured for values, ignored for mappings.
+
+**So the same endpoint applies two completely different standards**, and the lax half is the one that
+loses data. If value parsing ever drifts toward the mapping side, that is a serious regression with no
+external symptom, which is why *Invalid values are rejected strictly and atomically* asserts the strict
+behaviour rather than merely observing it —
+the unusual case in this folder of a test pinning a guarantee instead of a deviation.
+
+## 19. The 100-row cap does not apply to internal tables
+
+Measured while probing for finding 18, because no internal table in this repo had ever held more than
+10 rows and every future count-based assertion depends on the answer:
+
+| | Result |
+|---|---|
+| Import 150 rows | `200`, `processed: 150` |
+| `COUNT(*)` | **150** |
+| `SELECT … LIMIT 500` | **150 rows** |
+
+Uncapped. That is the **fifth** independent confirmation the cap belongs to the Stripe connector rather
+than to Peaka — after raw queries, exports, materialization and saved queries against Postgres. Internal
+tables are Peaka's own storage with no upstream API to paginate, so the same explanation holds: the cap
+is a symptom of Stripe's List API page size, not of Peaka's read path.
+
+**Two corrections to earlier notes in this repo, both found the same way.** `helpers/peakaClient.js`
+recorded that a Peaka Table carries three system columns (`_id`, `_version`, `_created_time`).
+`SELECT *` returns **fourteen** columns on a six-column table — the eight undeclared ones are `_id`,
+`_version`, `_created_time`, `_created_by`, `_last_modified_time`, `_last_modified_by`, `_session` and a
+bare `text` column. BI Table additionally carries `_operation`. Any assertion comparing a column list
+against what was declared must filter all of them, and `SELECT *` is not a safe way to read a row back.
+
+## 20. CSV import appends unconditionally, so a Peaka Table can only grow
+
+Finding 9 established that `SqlExec` cannot write and finding 11 that no row-level endpoint exists. Both
+leave the obvious follow-up open: since CSV import is the *only* write path, what does importing a second
+time do? Every scenario in `tests/peaka-tables/` had imported into a fresh table exactly once, so nobody
+had checked.
+
+Measured 2026-08-11:
+
+| Action | `processed` | `COUNT(*)` |
+|---|---|---|
+| Import 3 rows into an empty table | 3 | 3 |
+| Import the **byte-identical** CSV again | 3 | **6** |
+| Import a different 2-row CSV | 2 | **8** |
+
+Import **appends**, always. There is no replace mode, and no deduplication even for a byte-identical
+file — the duplicate rows come back with **different `_id`s**, so they are genuinely new rows rather than
+one row read twice. `result.processed` counts the rows in *that* request, never the table total, so a
+caller treating it as "how big is the table now" is correct exactly once.
+
+**The combination is what matters.** Append-only, no `UPDATE`, no `DELETE`, no dedup — a Peaka Table can
+only ever grow. A row imported by mistake cannot be corrected or removed through any endpoint this client
+has found; the only recovery is dropping the whole table and rebuilding it (finding 21 confirms that
+really does clear it). Anyone treating a Peaka Table as a maintainable store rather than an append log
+will silently accumulate duplicates.
+
+Asserted as *Repeated import appends instead of replacing*, with a failure message noting that a future
+`COUNT(*)` of 3 would mean Peaka gained replace semantics — a *fix* worth noticing, not a regression.
+
+## 21. Deleting a table purges its data and its schema
+
+Every scenario in `tests/peaka-tables/` opens with a best-effort "clean up any leftover table from a
+previous run" step and then assumes a blank slate. That assumption had never been verified. A soft delete
+would mean a "fresh" table could carry a previous run's rows, and several green assertions would be
+passing by luck — invisible from outside.
+
+Measured 2026-08-11, and delete is a genuine hard drop:
+
+| Step | Result |
+|---|---|
+| `deleteInternalTable` | `200`, gone from `listInternalTables()` |
+| `SELECT` from the deleted table | `400 "Table 'peaka.table.…' does not exist"` |
+| Recreate the **same name** | `200`, but only the 8 system columns exist |
+| `SELECT` a previously declared column on it | `400 "Column 'name' cannot be resolved"` |
+| `COUNT(*)` on the recreated table | `0` |
+| Import a row after re-adding columns | new `_id`, **not** any previously-used value |
+
+The schema half is the part most likely to catch someone out: **recreating a table by the same name does
+not restore the columns you declared on it.** You get a blank table carrying only Peaka's own system
+columns, and every user-declared column has to be added again.
+
+`_id` is also not a per-table sequence — a row in the recreated table gets an id well above the deleted
+rows' rather than restarting, consistent with a globally monotonic (snowflake-style) generator. The
+scenario asserts only **non-reuse**, not monotonicity: ordering is an internal detail Peaka may change,
+whereas a recycled id would mean a stale reference silently resolving to an unrelated row.
+
+## 22. `isUnique` and `isNotNull` are silently discarded at column creation
+
+Not an enforcement question — the flags are never **stored**. Create a column with them set, read it
+straight back, and they are `false`:
+
+| Sent | Read back |
+|---|---|
+| `isUnique: true` | **`false`** |
+| `isNotNull: true` | **`false`** |
+| `desc: "some text"` | **`null`** |
+| `defaultValue: "THE_DEFAULT"` | `"THE_DEFAULT"` ✓ |
+
+**`desc` is the third one, found later** (2026-08-12) while investigating finding 28. It is discarded both
+by `addInternalTableColumns` and by `updateInternalTableColumn` — `200` either way, `null` on read-back.
+
+**And the field is not unimplemented — it works everywhere else.** `listColumns` on a *Postgres* table
+returns real descriptions straight from the database:
+
+```
+actor.actor_id -> desc: "Primary key. Unique identifier for each actor.
+                         Generated from actor_actor_id_seq sequence."
+```
+
+So Peaka reads and surfaces column descriptions for connector-derived tables, and silently drops them for
+its own internal ones. That is a narrower, more specific defect than "descriptions are not supported", and
+it is why finding 28 cannot be reproduced on a table we own: there is no way to give one a description.
+
+The call returns `200`. Nothing in the response indicates anything was dropped. This is the same shape
+as finding 12 (BI Table's `displayName`): **a documented, settable field whose write silently does not
+take.** The import behaviour follows trivially and was confirmed anyway — two duplicate values import
+cleanly into the "unique" column, and an empty value lands as `NULL` in the "not null" one.
+
+**`defaultValue` is the control, and it works end to end.** A CSV whose mappings omit that column
+entirely produces rows carrying the default rather than `NULL`. That is what makes the other two a
+targeted defect rather than the column body being ignored wholesale — and it is asserted, because it
+would be easy to assume the whole feature is dead and stop using the part that works.
+
+**What the docs say, checked before writing any assertion.**
+[add-column](https://docs.peaka.com/api-reference/data--internal-tables/add-column) describes the fields
+only as *"The not null flag for the column"*, *"The unique flag for the column"*, *"The default value of
+the column"* — it never states whether they are enforced. So this is deliberately asserted as a **failed
+round trip** rather than a failed constraint: the docs make no enforcement promise to hold Peaka to, but
+they plainly present all three as settable properties, and two of them are not.
+
+**Why a customer hits it.** Marking an id or email column unique is ordinary modelling, and `isUnique` is
+offered as a first-class field, so setting it is the obvious move. The call succeeds; nobody re-reads the
+column to check the flag survived. They then import a CSV merged from two systems — the classic source of
+duplicate emails — and duplicates land silently. Per finding 20 those rows can never be removed.
+
+## 23. A Peaka Table and a BI Table with the same name stay fully isolated
+
+Verified working, and pinned, because the failure mode it guards against is silent data loss.
+
+The spec's `CMP-01` asks for exactly this — *"the two live independently, data does not mix, deleting one
+does not affect the other"* — but **its own version never creates the collision it tests for.** BI Table
+strips every underscore (finding 13), so requesting `e2e_auto_cmp_same` twice yields a Peaka Table named
+`e2e_auto_cmp_same` and a BI Table stored as `e2eautocmpsame`: two different names that could not collide.
+
+The scenario therefore covers both cases, and builds the real collision deliberately by creating the Peaka
+Table under BI Table's already-stripped name. Measured 2026-08-11 — isolation holds on every axis:
+
+| Check | Result |
+|---|---|
+| Same requested name | Two different stored names |
+| `listInternalTables()` / `listBiTables()` | No leak in either direction |
+| Each `SELECT` under the shared name | Sees only its own columns and rows |
+| Delete the Peaka Table | BI Table still listed **and** still queryable |
+
+**A customer reaches the collision without trying.** Nobody needs to name two things alike deliberately:
+create a BI Table `order_items`, Peaka stores it as `orderitems`, and a Peaka Table called `orderitems`
+already exists. The platform manufactured a collision the customer never chose and cannot see from the
+names they typed. Had deletion leaked across namespaces, removing one would destroy the other —
+unrecoverable per findings 20 and 21.
+
+It also de-risks this suite: [`helpers/cleanup.js`](helpers/cleanup.js) deletes by name from
+`createdInternalTableNames` then `createdBiTableNames`, so a cross-namespace leak would have had our own
+cleanup destroying resources it never created.
+
+## 24. The 100-row cap propagates through federated joins
+
+**The most consequential form of finding 1.** Peaka advertises cross-source querying as a headline
+capability — [peaka-query](https://docs.peaka.com/connecting-your-data/peaka-query) says Peaka Queries
+let you *"combine data from different Peaka Tables and other connected data sources."* Meanwhile the API
+reference documents **no row cap at all**: `execute-query` describes `limit` as *"Maximum number of rows
+to return"* and promises no ceiling.
+
+So an **undocumented** cap silently degrades a **documented** feature. Measured 2026-08-11:
+
+| Query | Result |
+|---|---|
+| Stripe `customers`, queried directly | **100** distinct (505 exist) |
+| Internal table `CROSS JOIN` Postgres | **50,000** rows (2 × 25,000) — uncapped |
+| Internal table `CROSS JOIN` Stripe `customers` | **100** distinct Stripe rows, **200** join rows |
+
+The Postgres leg is the control and it is load-bearing: federation happily produces 50,000 rows when
+neither side is Stripe, so the join mechanism is not the limiter. Put a Stripe table on one side and the
+result is computed over 100 of its 505 rows.
+
+**Why this is worse than the plain cap.** A truncated `SELECT` at least *looks* truncated — you asked for
+rows and got fewer. An aggregate over a truncated join looks like **an answer**. A customer joining their
+own customer list against Stripe charges to compute revenue gets a number, with no error, no warning and
+no flag, and four fifths of the Stripe data never entered the calculation.
+
+This is the **sixth** independent confirmation that the cap belongs to the Stripe connector — after
+queries, exports, materialization, saved queries and internal tables — and the first showing it crosses
+into federated results.
+
+## 25. A saved query re-binds silently to a recreated table
+
+A saved query is stored as **SQL text** and its table name is resolved at execution time. The query
+object and the query execution therefore fail independently:
+
+| Action | Running the saved query | `getQuery` / `listQueries` |
+|---|---|---|
+| Drop a column the query `SELECT`s | `400 "Column 'doomed' cannot be resolved"` | Still `200`, `inputQuery` unchanged |
+| Delete the whole table | `400 "Table '…' does not exist"` | Still `200`, still listed |
+| Recreate the table, same name, **different data** | **`200` — returns the new data** | Still `200` |
+
+**No 5xx at any point** — every dangling reference degrades into a clean, specific `4xx`. That was the one
+invariant worth asserting before measuring anything, because finding 3 is the precedent: deleting a cache
+once left a table permanently unreachable.
+
+Two consequences worth knowing:
+
+- **Deleting a table never deletes the queries built on it.** A project accumulates queries that are
+  broken until the name reappears — which is arguably right, but nothing tells you they broke.
+- **The re-bind cuts both ways.** It is exactly what you want when you reload a table you own. It is
+  exactly what you do *not* want when someone else creates an unrelated table that reuses the name: the
+  dashboard keeps working and quietly starts reporting different data, with no error anywhere.
+
+## 26. An export round-trips through import — but carries eight system columns
+
+The everyday loop: export a table, open it in Excel, upload it again. Measured 2026-08-11 with 150 rows,
+deliberately past the Stripe cap:
+
+| Step | Result |
+|---|---|
+| `createTableExport("1", "table", …)` | `202 PENDING`, then `SUCCEEDED` with `rowCount: 150` |
+| Downloaded file | 151 lines — header plus **all 150 rows** |
+| Re-imported into a second table | `200`, `processed: 150`, values identical |
+
+**The export is not capped.** That is the **seventh** independent confirmation the 100-row cap belongs to
+the Stripe connector. It matters here specifically because the cap *does* reach Stripe's export files
+(finding 1), so the export path was a plausible place for it to reappear on internal tables. It does not.
+
+**But the exported file is not directly re-importable.** The header is:
+
+```
+_id,_version,_created_time,_created_by,_last_modified_time,_last_modified_by,_session,text,<your columns>
+```
+
+All eight system columns come along. Mapping every header column on the way back in would target Peaka's
+internal columns, so a caller has to filter the mapping down to the columns they actually declared.
+`createTableExport` takes no `includeSystemColumns` option — only `createQueryExport` does — so for a
+table export the filtering has to happen client-side.
+
+**Note the asymmetry with the sample endpoint.** The spec *requires* `getTableSample`'s output to be
+importable as-is, and it is (finding 15). Peaka produces two CSV-shaped outputs and only one of them
+round-trips without editing — the one explicitly designed as a template.
+
+## 27. A materialized query over an internal table never goes stale
+
+**Peaka's docs are explicit** about what materialization means:
+[what-is-materialized-query](https://docs.peaka.com/connecting-your-data/what-is-materialized-query)
+says results are *"refreshed on a schedule or manually; data can be slightly stale between refreshes."*
+The whole trade is currency for speed.
+
+Over an internal table there is **no snapshot at all**. Measured 2026-08-11:
+
+| Step | Base table | Through the materialized query |
+|---|---|---|
+| Seed 3 rows, then force a refresh | 3 | 3 |
+| Append 2 rows, **no refresh** | 5 | **5** ← not stale |
+| Refresh again | 5 | 5 |
+
+**The first attempt to measure this was ambiguous, and the trap is worth recording.** A freshly created
+`MATERIALIZED` query reports `status: COMPLETED` with `lastExecutionStartTime: null` — that means
+"nothing in flight", not "materialized" (the same trap `tests/stripe/n-materialized-queries.js`
+documents). Reading it in that state proves nothing, because no execution has ever run. The scenario
+therefore forces a real materialization first and asserts the timestamps are populated, so the staleness
+check afterwards is meaningful.
+
+**This is the exact inverse of finding 2**, and the pair is the interesting part — same feature, opposite
+failure, decided by what sits underneath:
+
+| Source | Materialization behaviour |
+|---|---|
+| Stripe (uncached API connector) | Snapshot, **frozen at the capped 100** of 505 rows, permanently |
+| Postgres (database) | Snapshot of the whole table |
+| Peaka Table (internal storage) | **No snapshot** — tracks the base table live |
+
+A plausible explanation is that materialising Peaka's own storage would be pure overhead, so it is a
+deliberate no-op. That is defensible — but it is undocumented, and it silently breaks the one thing
+customers materialise *for*: freezing figures. Someone snapshotting month-end numbers gets a live view
+whose "snapshot" keeps moving, with the documentation telling them the opposite.
+
+## 28. A table comment breaks `createCache`, and the crash is disguised as a 4xx
+
+Found by pointing the existing suite at a **second Peaka project** — the whole reason the Postgres folder
+exists. Nothing in the tests changed; only the database did.
+
+`createCache` on a table whose Postgres `COMMENT` is not valid JSON fails with a **parser error** instead
+of its proper rejection:
+
+```
+400 {"error":"WrongRequestException",
+     "message":"Unexpected JSON token at offset 8: Expected EOF after parsing, but had a
+                instead at path: $\nJSON input: Stores actors appearing in films.",
+     "errorCode":null}
+```
+
+`"Stores actors appearing in films."` is the Sakila `actor` table's comment. Peaka reads the description
+out of Postgres' catalog and runs it through a JSON parser.
+
+**Measured across the whole schema, 2026-08-12:**
+
+| | Result |
+|---|---|
+| Tables rejecting with `TABLE_NOT_CACHEABLE` | **27 of 28** |
+| Tables rejecting with a parse error and `errorCode: null` | **1** (`actor` — the only commented table) |
+| `listColumns`, `isTableCached`, `SELECT COUNT(*)` on that table | all `200`, identical to uncommented tables |
+
+So the fault is **isolated to `createCache`**, and the parse happens *before* the cacheability check —
+tables without comments reach the correct rejection.
+
+**Three consequences.** The documented rejection path is destroyed for commented tables; `errorCode` is
+`null` so a client has nothing to branch on and must string-match a parser message; and the table's
+comment leaks into an error message.
+
+**The disguise is the more interesting half.** Peaka returns **`400 WrongRequestException`** — *the client
+sent something wrong*. The request was entirely valid; what failed is Peaka parsing its own stored
+metadata. A server-side crash wearing a client-error status **evades the 5xx warning channel completely**
+(`helpers/serverError.js` keys on status ≥ 500), so the instructor's rule *"a 5xx is always a bug"* has a
+blind spot: a server bug returned as `4xx` is invisible to it. The only thing that caught this was the
+assertion that a rejection carries a usable `errorCode`.
+
+**Why it is reported rather than asserted.** The input is outside this suite's control in both
+directions, and the distinction between table and column descriptions matters here:
+
+| | Readable through the API? | Settable through the API? |
+|---|---|---|
+| **Column** description | **Yes** — `listColumns` returns `desc` for Postgres columns | No (silently dropped on internal tables — finding 22) |
+| **Table** description | **No** — `listTables` has no such field, 0 of 28 | No |
+
+The comment that breaks `createCache` is a **table** comment, so it is invisible in both directions. Every
+alternative route is closed too: `information_schema.tables` exposes only catalog/schema/name/type,
+`obj_description('…'::regclass)` is rejected by Trino's parser, and `pg_description` is not resolvable
+through the connector. **The only reason its text is known at all is that the bug itself echoes it back**
+in the error message.
+
+Which tables trigger it therefore depends entirely on whose schema you point at, so an assertion would
+pass or fail on the database rather than on Peaka. `PG-A` now surveys the schema, asserts only what holds
+anywhere — no `5xx`, and at least one clean rejection — and **reports** the malformed count with the
+leaked comment.
+
+**Reproduction** (`film_actor` is the control — same call, correct rejection):
+
+```
+createCache(public.actor)       -> 400, errorCode null, JSON parse error
+createCache(public.film_actor)  -> 400 TABLE_NOT_CACHEABLE
+```
+
+**Untested implication.** The parser is lenient — it consumed the bare word `Stores` and only failed at the
+*next* token — so a single-word comment may well parse cleanly. Untestable here: only one commented table
+exists and no API can create another.
+
+## 29. BI Table is writable in Studio and read-only through the Partner API
+
+**This corrects a claim this document made for weeks.** It said BI Table "has no write path at all",
+which was measured against an empty BI Table and was too strong. Rows entered through **Studio** land
+perfectly well, and the Partner API can read them in full. What the API cannot do is *write* them.
+
+**What the docs promise.**
+[peaka-bi-table](https://docs.peaka.com/connecting-your-data/peaka-bi-table) is explicit: a BI Table can
+*"execute operations like row-by-row updates, deletions, and insertions"* and is *"ideal for the storage
+of event data, particularly excelling when handling bulk data insertion from various sources."* Four
+capabilities, stated plainly.
+
+**What the Partner API delivers**, re-measured 2026-08-13 against a BI Table holding 8 real rows — so
+this is no longer the empty-table result:
+
+| Attempt | Result |
+|---|---|
+| `SqlExec INSERT` / `UPDATE` / `DELETE` | `400 "Statement type 'X' is not allowed"` |
+| `POST /bitable/{t}/import` | `404` — the Peaka Table equivalent of this route **works** |
+| `POST /bitable/{t}/` + `rows`, `row`, `data`, `records`, `insert`, `values` | `404`, all six |
+| Row count before / after every attempt | **8 / 8**, and every column value byte-identical |
+
+**The read side, by contrast, is complete**: `SELECT *`, single-column projection, `WHERE` filters,
+`GROUP BY`, joins to a Peaka Table, async CSV export (`202`), and saved queries over it (`200`) all work.
+
+**So the question changes shape.** It is not "is BI Table finished?" — the feature demonstrably works. It
+is **why the write path is UI-only when the documentation describes it as a property of the table.**
+Anyone building on the Partner API can read a BI Table but can never populate one, and nothing in the
+docs says so.
+
+`_operation` also revealed its purpose here: every Studio-inserted row carries `"INSERT"`. It is the
+ninth system column, the one Peaka Table lacks, and until a populated BI Table existed it had never held
+a value — consistent with BI Table being an event/change-log store.
+
+Asserted as *A populated BI Table refuses every documented write*, which re-reads the whole table after
+every attempt rather than only the row count: an `UPDATE` that changed a value in place would leave the
+count untouched.
+
+## 30. `createCache` cannot refuse an internal table — it fails looking one up
+
+The Postgres folder establishes what a correct refusal looks like: `isCacheable: false` in the metadata,
+**and** `createCache` acting on it with `400 TABLE_NOT_CACHEABLE`. A flag can be stale; a rejection
+cannot, which is why `PG-A` asserts both halves.
+
+Internal tables manage only the first half. Measured 2026-08-13 across both kinds, empty and populated:
+
+| Call | Result |
+|---|---|
+| `isCacheable` / `supportedCacheTypes` | `false` / `[]` — correct |
+| `createCache(schema "bitable")` | `400 "cannot find table or properties: \"table0658…\" in schema: \"schemamapper9lbuaggx…\""`, `errorCode: null` |
+| `createCache(schema "table")` | same shape, different mangled identifier |
+
+The request never reaches the cacheability check. It dies looking up an internal, mangled table
+identifier, and the caller gets a message about Peaka's own storage layout instead of an answer to the
+question they asked.
+
+**This is the second endpoint response today whose `errorCode` was eaten by an unrelated internal
+failure** — finding 28 is the first, on a table carrying a Postgres comment. Two independent causes,
+same endpoint, same `null` `errorCode`, which makes it a property of `createCache`'s error handling
+rather than a one-off. A client written the way `PG-A` is — *try to cache, handle `TABLE_NOT_CACHEABLE`* —
+has nothing to branch on and must string-match a message about internal schema names.
+
+Asserted as *Cache creation on a BI Table fails before it can be refused*, which needs no fixture and so
+runs in any project.
+
+## 31. Adding an existing column leaks the whole PostgreSQL exception
+
+Found while migrating BI Table data into a Peaka Table. Every internal table is created with a default
+`text` column, so re-adding one produces a `400` — reasonably. What it returns is not reasonable:
+
+```
+{"errorCode":100,"message":"org.postgresql.util.PSQLException: ERROR: duplicate key value violates
+ unique constraint \"sm_column__name__table_name_key\"\n  Detail: Key (_name, _table_name)=(text,
+ e2e_auto_bi_export_dst) already exists.\n  Where: SQL statement \"INSERT INTO
+ schema_mapper_9lbuaggx_4128748030302570328.sm_column (_id, _name, _display_name, _table_name, …)
+ …PL/pgSQL function abstract_schema_mapper.create_column_props_with_id_corrected(text,text,jsonb)
+ line 16 at EXECUTE…"}
+```
+
+Handed to the caller: the internal schema name and its project-scoped suffix, the internal `sm_column`
+table and its constraint name, the generated `ALTER TABLE`, two PL/pgSQL function names with line
+numbers, and the full argument list. A duplicate column is an ordinary, expected mistake — it should
+produce "column already exists", not a stack-trace-grade dump of the storage layer.
+
+Same family as findings 28 and 30: an internal failure surfacing raw through a `4xx`. Here `errorCode` is
+at least populated (`100`), so the caller can branch — the problem is purely the disclosure.
+
+Not asserted. The scenario that found it now reads the destination's existing columns and adds only what
+is missing, which is what a caller should do anyway.
+
+## 32. MongoDB's `_id` is invisible, and the obvious way to filter on it is broken
+
+Found while building the first MongoDB scenario (`tests/mongodb/mo-a-discovery.js`, project `z8mo8AxO`,
+catalog `connect2`, collection `e_commerce.commerce`, 25,000 rows). Every MongoDB document has an `_id` —
+it is the collection's real primary key — and Peaka drops it from the schema mapping entirely:
+
+- `listColumns` on `commerce` returns 8 columns. `_id` is not one of them.
+- `SELECT *` returns the same 8 fields. No `_id` key on the row.
+
+So a caller relying on either endpoint to discover what's queryable would never learn `_id` exists at all.
+
+It is still there if you ask for it **by name**, but two things go wrong:
+
+**The value is unusable as returned.** `SELECT _id` succeeds and returns a string like
+`"6a 4c 8d 06 7a 40 cc b7 fa ad ba 17"` — Trino's default `VARBINARY` rendering, hex byte pairs joined by
+spaces — not the 24-character hex string (`6a4c8d067a40ccb7faadba17`) any MongoDB tool or driver would
+recognize as an ObjectId. Nothing in the response says to strip the spaces or that this is even an
+ObjectId; you'd have to already know Trino's rendering convention.
+
+**The obvious filter fails outright.** `WHERE _id = '<hex>'` — the first thing anyone would try — is
+rejected:
+
+```
+{"errorCode":100,"message":"Unexpected parameters (ObjectId, varchar(24)) for function $operator$EQUAL.
+ Expected: $operator$EQUAL(T, T) T:comparable"}
+```
+
+The declared type is a distinct `ObjectId` type, not `varchar` or `varbinary`, and Trino won't implicitly
+compare it against either.
+
+**There is a working path**, which is why this is recorded as a finding rather than "no way in at all":
+
+```sql
+SELECT CAST(_id AS VARCHAR) AS id_hex FROM "connect2"."e_commerce"."commerce" LIMIT 1
+-- -> '6a4c8d067a40ccb7faadba17', the standard hex form
+
+SELECT * FROM "connect2"."e_commerce"."commerce" WHERE _id = objectid('6a4c8d067a40ccb7faadba17')
+-- -> works, returns the matching row
+```
+
+Both `CAST(_id AS VARCHAR)` and Trino's MongoDB-connector `objectid('<hex>')` function work — the second
+is a Trino/Presto MongoDB-connector convention, undocumented anywhere in Peaka's own docs. Someone would
+have to already know Trino's MongoDB connector internals to find it; nothing in Peaka's API surface points
+there.
+
+Not the same defect family as 28/30/31 (no internal exception leaks, no `5xx`) — this is a pure
+discoverability and ergonomics gap: a real primary key that exists, is queryable, and yet is unreachable by
+anyone who only reads `listColumns` and writes ordinary SQL.
+
+Asserted rather than merely observed: `mo-a-discovery.js` pins both the absence (`listColumns`/`SELECT *`
+never carry `_id`) and the broken naive path (`WHERE _id = '<hex>'` returns `400`), then proves the
+workaround still round-trips to the right row — so a future Peaka release that starts exposing `_id`
+properly shows up here as a failure, and one that closes the `objectid()`/`CAST` path without fixing the
+underlying visibility shows up as a different, more useful failure.
+
+## 33. Table statistics are implemented for Postgres only — not Stripe, not MongoDB
+
+`tests/postgres/pg-g-catalogs.js` records that `getTableStatistics` returns `200` with real per-column
+statistics for a Postgres catalog, while Stripe's equivalent (`tests/stripe/h-catalogs.js`) gets a clean
+`400 "Catalog type: stripe is not being supported yet"`. Read with only those two data points, the obvious
+generalization is "database connectors get it, API connectors don't" — and that generalization is wrong.
+
+Measured live against the third connector, `connect2` (MongoDB), project `z8mo8AxO`:
+
+```
+GET .../tables/commerce/statistics  (catalogType: peaka_mongodb)
+-> 400 {"errorCode":100,"message":"Catalog type: peaka_mongodb is not being supported yet"}
+```
+
+The exact same rejection Stripe gets — on a connector that queries a real, live database directly through
+Trino, exactly like Postgres does. So the two-connector pattern was an accident of which two connectors
+happened to be tried first. The real shape is narrower and less interesting than "database vs API": Postgres
+is the only connector with this feature built, and nothing about being a database connector predicts it.
+
+|  | `getTableStatistics` |
+|---|---|
+| Stripe | `400`, unsupported |
+| Postgres | `200`, real statistics |
+| MongoDB | `400`, unsupported |
+
+Not a bug — an unimplemented feature is not a defect — but worth recording precisely, because the
+Postgres-only shape is easy to mis-generalize from two points and this suite very nearly did. `MO-G`
+asserts the `400` deliberately, as the mirror image of `PG-G`'s `200`, so neither scenario can be "fixed" to
+agree with the other without the change being a real regression or a real improvement.
 
 ## Server errors now have their own channel
 

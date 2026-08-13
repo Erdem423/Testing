@@ -82,6 +82,11 @@ PEAKA_PG_CATALOG_ID=your_postgres_catalog_id
 PEAKA_PG_SCHEMA_NAME=public
 PEAKA_PG_CONNECTION_ID=your_postgres_connection_id
 
+# MongoDB folder (omit to skip those scenarios)
+PEAKA_MONGO_CATALOG_ID=your_mongo_catalog_id
+PEAKA_MONGO_SCHEMA_NAME=your_mongo_database_name
+PEAKA_MONGO_CONNECTION_ID=your_mongo_connection_id
+
 EXPECTED_CUSTOMER_COUNT_NON_CACHE=100
 ```
 
@@ -97,6 +102,9 @@ EXPECTED_CUSTOMER_COUNT_NON_CACHE=100
 | `PEAKA_PG_SCHEMA_NAME` | The schema to test, e.g. `public` |
 | `PEAKA_PG_CONNECTION_ID` | The connection behind that catalog. An id, not a secret |
 | `PEAKA_PG_TABLE` | *Optional.* Pins a specific table instead of letting the preflight pick the largest one |
+| `PEAKA_MONGO_CATALOG_ID` | An existing MongoDB catalog. The folder reuses it rather than creating one — no connection string is ever stored |
+| `PEAKA_MONGO_SCHEMA_NAME` | The Mongo *database* to test — Peaka reports each Mongo database as one "schema", e.g. `e_commerce` |
+| `PEAKA_MONGO_CONNECTION_ID` | The connection behind that catalog. An id, not a secret |
 | `EXPECTED_CUSTOMER_COUNT_NON_CACHE` | The known live-query cap (`100`). A **product constant**, not your data — a deliberate regression test, see [FINDINGS.md](FINDINGS.md#1-live-queries-cannot-return-more-than-100-rows) before changing it |
 | `ALLOW_INCOMPLETE` | Set to `true` to exit 0 despite skipped scenarios. See [Incomplete runs](#incomplete-runs) |
 | `FAIL_ON_SERVER_ERROR` | Set to `true` to exit non-zero if any 5xx was observed, even a tolerated one. See [Server errors](#server-errors) |
@@ -109,7 +117,25 @@ EXPECTED_CUSTOMER_COUNT_NON_CACHE=100
 npm test                 # the main suite, ~85s
 npm run test:races       # the concurrency suite, ~10 min (see below)
 npm run web              # browser dashboard at http://localhost:3000
+npm run check:refs       # traceability check, no API calls, instant
 ```
+
+### Traceability — which rule made each test necessary
+
+Every Peaka Tables scenario carries a `refs` array in its `meta.js` entry, linking it to the written
+rule it exists to enforce: an official docs page, a scenario in the instructor's spec, or a
+[FINDINGS.md](FINDINGS.md) entry. The idea is borrowed from the [Open Banking conformance
+suite](https://github.com/OpenBankingUK/conformance-suite), where each test case carries a `refURI`
+pointing at the spec clause it tests.
+
+`npm run check:refs` validates those links and prints two tables worth having:
+
+- **Spec coverage** — which of the spec's scenario ids are claimed by a test, so *"what do you actually
+  cover?"* is answered by a script rather than by hand.
+- **Findings cited by no scenario** — informational, since many findings are Stripe- or Postgres-only.
+
+It **exits non-zero** when a scenario cites a finding number that has no matching `## <n>.` heading, which
+is how a renumbered finding gets caught instead of silently dangling.
 
 ### Incomplete runs
 
@@ -277,13 +303,32 @@ A per-step breakdown is in [STRIPE_TEST_SCENARIOS.md](STRIPE_TEST_SCENARIOS.md).
 Stripe and Postgres, neither needs a connection or catalog of its own — both live in the project's
 always-present `peaka` catalog, so this folder runs on nothing but `PEAKA_API_KEY`/`PEAKA_PROJECT_ID`.
 
+Scenario names describe what each one establishes rather than carrying the spec's IDs — several assert
+the *opposite* of what the spec predicts, and two have no spec counterpart at all.
+
 | Scenario | Covers |
 |---|---|
-| **PT-11: CSV import — happy path** | The only real write path into a Peaka Table (`SqlExec` is SELECT-only — see [FINDINGS.md](FINDINGS.md)) |
-| **PT-12: CSV import — mapping errors** | The doc expects all four bad-mapping cases to fail; one of them silently succeeds and writes `NULL` — asserted as the real, measured behaviour |
-| **PT-04 / BT-06: Column update and delete** | Column rename + delete on each table kind — BI Table's `displayName` never actually persists, despite the API claiming it did |
-| **PT-08: point-edit UPDATE/DELETE (capability gap)** | Not a feature test — a pinned absence. No row-level edit path exists via SQL or REST |
-| **CMP: join across two Peaka Tables** | Adapted from the spec's Table×BI-Table join, which is blocked — BI Table has no known write path at all |
+| **CSV import writes every row exactly as given** | The only real write path into a Peaka Table (`SqlExec` is SELECT-only — see [FINDINGS.md](FINDINGS.md)) |
+| **A bad mapping silently writes NULL instead of failing** | The spec expects all four bad-mapping cases to fail; one of them silently succeeds and writes `NULL` — asserted as the real, measured behaviour |
+| **Invalid values are rejected strictly and atomically** | The mirror of the above, and the opposite result: bad *values* are rejected with excellent messages. Pins a guarantee, so a drift toward the lax mapping handling is caught |
+| **Repeated import appends instead of replacing** | Re-importing never replaces and never deduplicates — combined with the absent row edits, a Peaka Table can only ever **grow** |
+| **The sample endpoint returns a type-aware template with example rows** | A **template** generator, and it conforms to the spec — including the import round trip. Sole deviation: an undeclared `text` column in the header. Required fixing a client bug (silently returned `null`) to measure at all |
+| **Peaka Table columns rename and delete cleanly** / **BI Table silently ignores displayName on every column change** | The same operation on each table kind — BI Table's `displayName` never actually persists, despite the API claiming it did |
+| **Deleting a table purges its data and its schema** | A genuine hard drop: recreating the same name gives a blank table with no declared columns, and ids are never reused. Pins the blank-slate assumption every other scenario depends on |
+| **Schema changes apply cleanly to a table that already holds data** | The most customer-shaped scenario here — add a column to a populated table, drop one that holds data, relabel one. All working, all pinned |
+| **Unique and not-null flags are silently discarded at column creation** | Sent `true`, stored `false`, `200` in between — a settable field whose write never takes. `defaultValue` is the control and works end to end |
+| **A Peaka Table and BI Table sharing a name stay isolated** | Covers the spec's `CMP-01` — plus the collision the spec's own version never creates, since underscore stripping means one requested name yields two different tables |
+| **A saved query tracks changes to the table beneath it** | Drop a column or the whole table and execution breaks with a clean `4xx` while the stored query survives — then recreating the table under the same name makes the query **silently re-bind** to the new data |
+| **A federated join inherits the Stripe row cap** | The folder's only gated scenario. Joining an internal table to Postgres returns all 50,000 rows; joining it to Stripe silently truncates at 100 — so an aggregate over the join looks like an answer and is wrong |
+| **Data survives an export and re-import unchanged** | The Excel loop. Uncapped at 150 rows, values identical on the way back — but the export carries all 8 system columns, so the mapping has to be filtered first |
+| **A materialized query over an internal table never goes stale** | Peaka's docs promise a snapshot that ages between refreshes; over an internal table there is none — appended rows appear immediately. The inverse of the Stripe materialization bug |
+| **BI Table rows are queryable and join to a Peaka Table** | Closes the spec's `CMP-02`. Rows entered via Studio are fully readable, so the Peaka Table side is seeded from values *discovered* in the BI Table at runtime — asserting invariants, so editing the data can't break it |
+| **A populated BI Table refuses every documented write** | The docs promise row-by-row inserts, updates, deletes and bulk insertion; the API delivers none. With real rows present it proves the data is byte-identical afterwards — impossible against an empty table |
+| **A BI Table exports into a Peaka Table which is the only way out** | No import route exists for BI Tables, so the round trip lands in a Peaka Table — the only API-writable destination. The export carries `_operation`, the ninth system column |
+| **A materialized query over a BI Table agrees with the table underneath** | Deliberately does *not* claim whether a snapshot is held — with no write path the base can't be made to drift. Pins the thing a dashboard depends on: filters agreeing through the materialized query |
+| **Cache creation on a BI Table fails before it can be refused** | Postgres returns a clean `TABLE_NOT_CACHEABLE`; internal tables die looking up a mangled internal identifier with `errorCode: null` — for both table kinds |
+| **No row-level UPDATE or DELETE exists anywhere** | Not a feature test — a pinned absence. No row-level edit path exists via SQL or REST |
+| **Joins across two Peaka Tables return correct groupings** | Adapted from the spec's Table×BI-Table join, which the Partner API cannot seed. **Now also covered directly** by the BI Table read/join scenario, using rows entered through Studio |
 
 Several of the spec's own assumptions about the platform turned out to be wrong — see findings 9–16 in
 [FINDINGS.md](FINDINGS.md) for the full list, including why roughly half its 24 scenarios can't be built
@@ -319,8 +364,9 @@ tests/
     pg-a-discovery.js … pg-i-metadata.js
   peaka-tables/              - no connection/catalog needed; lives in the built-in `peaka` catalog
     meta.js
-    pt-11-import.js, pt-12-import-errors.js, pt-04/bt-06-column-update.js, pt-08-no-row-edit.js,
-    cmp-internal-join.js
+    csv-import-*.js (happy-path, mapping-errors, type-coercion, repeats-append),
+    table-column-update.js, bitable-column-update.js, table-delete-purge.js,
+    sample-endpoint.js, no-row-level-edit.js, internal-table-join.js
   races/
     meta.js
     tier1.js … tier4.js
@@ -410,9 +456,9 @@ It also exposes a manual **Run workflow** button.
 
 Required repository secrets (**Settings → Secrets and variables → Actions**): `PEAKA_API_KEY`,
 `PEAKA_PROJECT_ID`, `STRIPE_TEST_TOKEN`, `PEAKA_CATALOG_ID`, `PEAKA_SCHEMA_NAME`,
-`EXPECTED_CUSTOMER_COUNT_NON_CACHE`, optionally the `PEAKA_PG_*` trio for the Postgres folder, and
-optionally `SLACK_WEBHOOK_URL`. No `.env` is needed — `helpers/env.js` prefers real environment
-variables.
+`EXPECTED_CUSTOMER_COUNT_NON_CACHE`, optionally the `PEAKA_PG_*` trio for the Postgres folder, optionally
+the `PEAKA_MONGO_*` trio for the MongoDB folder, and optionally `SLACK_WEBHOOK_URL`. No `.env` is needed —
+`helpers/env.js` prefers real environment variables.
 
 Note the CI job will **fail on an incomplete run**, which is the intended behaviour: a nightly that
 silently stopped covering half the suite is worse than one that goes red. Set `ALLOW_INCOMPLETE=true`
