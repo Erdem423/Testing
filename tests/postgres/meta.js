@@ -36,6 +36,7 @@ module.exports = {
         "columns on the large table carry real declared types",
         "no Postgres table is cacheable, in any schema",
         "creating a cache on a Postgres table is refused",
+        "every cache rejection carries a usable error code",
       ],
     },
     {

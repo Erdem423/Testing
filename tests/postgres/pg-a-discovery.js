@@ -160,23 +160,95 @@ async function runPgDiscovery(ctx) {
   // acts on it rather than merely advertising it - a flag can be stale, a
   // rejection cannot.
   await step("creating a cache on a Postgres table is refused", async () => {
-    // Any real table proves the point; no need for a specific one.
-    const targetTable = anyTableName;
-    const res = await ctx.client.createCache({
-      catalogId: ctx.catalogId,
-      schemaName: ctx.schemaName,
-      tableName: targetTable,
-    });
+    // SURVEYS THE SCHEMA RATHER THAN TRUSTING ONE TABLE. This step used to take
+    // the first table it found, which made it hostage to that table's metadata:
+    // on the Sakila sample database it landed on `actor`, whose rejection is
+    // MALFORMED (see the next step), and a real product claim went red for a
+    // reason that had nothing to do with cacheability enforcement.
+    //
+    // The claim here is "Peaka refuses, and says why". Proving it needs one
+    // table that rejects cleanly - and finding that is the discovery job this
+    // folder does everywhere else, rather than hardcoding a fixture.
+    const tables = await ctx.client.listTables(ctx.catalogId, ctx.schemaName);
+    assertStatus(tables, 200, "listTables");
+    const names = (tables.body || []).map((t) => t.tableName).filter(Boolean);
+    assert(names.length > 0, `No tables in '${ctx.schemaName}' to attempt a cache on`);
 
-    // Defensive: if Peaka ever starts allowing this, the cache is real and must
-    // be cleaned up. Tracked before asserting so a failure cannot strand it.
-    if (res.status === 200 && res.body && res.body.id) {
-      ctx.createdCacheIds.push(res.body.id);
+    const rejections = [];
+    let cleanRejection = null;
+
+    for (const tableName of names) {
+      const res = await ctx.client.createCache({
+        catalogId: ctx.catalogId,
+        schemaName: ctx.schemaName,
+        tableName,
+      });
+
+      // Defensive: if Peaka ever starts allowing this, the cache is real and
+      // must be cleaned up. Tracked before asserting so a failure cannot
+      // strand it.
+      if (res.status === 200 && res.body && res.body.id) {
+        ctx.createdCacheIds.push(res.body.id);
+      }
+
+      assertNoServerError(res, `createCache(${tableName})`, {
+        message: `createCache(${tableName}) returned ${res.status} - a server error, which no input should cause`,
+      });
+      rejections.push({ tableName, status: res.status, body: res.body || {} });
+
+      if (res.status === 400 && res.body && res.body.errorCode === "TABLE_NOT_CACHEABLE") {
+        cleanRejection = tableName;
+        break; // one clean rejection is all the enforcement claim needs
+      }
     }
 
-    assertStatus(res, 400, `createCache(${targetTable}) on a database connector`);
-    assertEqual(res.body.errorCode, "TABLE_NOT_CACHEABLE", "rejection errorCode");
-    console.log(`createCache refused: ${res.body.errorCode}`);
+    ctx.cacheRejections = rejections;
+    assert(
+      cleanRejection,
+      `No table in '${ctx.schemaName}' produced a proper TABLE_NOT_CACHEABLE rejection. Peaka either stopped ` +
+        `enforcing non-cacheability, or every rejection is now malformed. Attempts: ` +
+        JSON.stringify(rejections.map((r) => `${r.tableName}=${r.status}/${r.body.errorCode}`))
+    );
+    console.log(`createCache refused with TABLE_NOT_CACHEABLE on '${cleanRejection}'`);
+  });
+
+  // REPORTED, NOT ASSERTED, and deliberately so. A table whose Postgres COMMENT
+  // is not valid JSON makes createCache fail with a PARSE error instead of its
+  // proper rejection - errorCode null, and the comment echoed back in the
+  // message. Measured 2026-08-12 on Sakila: 1 of 28 tables (`actor`, commented
+  // "Stores actors appearing in films.").
+  //
+  // Not asserted because the input is outside this suite's control, and the
+  // table/column distinction is what makes it so. COLUMN descriptions ARE
+  // readable - listColumns returns a real `desc` for Postgres columns - but
+  // TABLE descriptions are not exposed anywhere: listTables has no such field,
+  // information_schema.tables carries only catalog/schema/name/type,
+  // obj_description('...'::regclass) is rejected by Trino's parser, and
+  // pg_description will not resolve. Nor can one be SET (the `desc` field on
+  // internal-table columns is silently discarded - see FINDINGS 22).
+  //
+  // The only reason the offending comment's text is known at all is that this
+  // very bug echoes it back. Which tables trigger it therefore depends on
+  // someone else's schema, so an assertion here would pass or fail on whose
+  // database you point at rather than on anything Peaka did.
+  //
+  // It also evades the 5xx warning channel completely: Peaka returns 400
+  // WrongRequestException, so a genuine server-side crash is labelled a client
+  // error and helpers/serverError.js never sees it.
+  await step("every cache rejection carries a usable error code", async () => {
+    const rejections = ctx.cacheRejections || [];
+    const malformed = rejections.filter(
+      (r) => r.status === 400 && !r.body.errorCode && String(r.body.message || "").includes("JSON input:")
+    );
+
+    for (const r of malformed) {
+      const leaked = String(r.body.message).split("JSON input:")[1].trim();
+      console.log(`FINDING: '${r.tableName}' rejected with errorCode=null - its description broke a JSON parse: ${leaked}`);
+    }
+    console.log(
+      `OBSERVED: ${rejections.length - malformed.length} of ${rejections.length} attempted rejections carried an errorCode` +
+        (malformed.length ? ` - ${malformed.length} did not (see FINDINGS 28)` : "")
+    );
   });
 }
 
