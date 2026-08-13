@@ -1,5 +1,6 @@
 const { assertStatus, assertStatusIn, assert } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
+const { warnOnServerError, assertNoServerError } = require("../../helpers/serverError");
 const {
   duringState,
   duringSync,
@@ -174,14 +175,20 @@ async function runTier1Races(ctx) {
       ctx.client.createCache({ catalogId: raceCatalogId, schemaName: ctx.schemaName, tableName: SLOW_TABLE })
     );
 
+    // The 5xx is RECORDED rather than logged, so it reaches the run banner,
+    // coverage.json and the dashboard - see helpers/serverError.js. Still not
+    // asserted, for the reason in the comment above: asserting it would
+    // institutionalise a server error as correct.
     if (!outcome.enteredWindow) {
       console.log(`window missed (status at fire: ${outcome.statusAtFire}) - invariants still checked below`);
-    } else if (outcome.result.status >= 500) {
-      console.log(
-        `reproduced the known 5xx: duplicate createCache during a RUNNING sync -> ${outcome.result.status}. ` +
-          `Docs specify 409. Entered window at ${outcome.msToRunning}ms.`
-      );
-    } else {
+    } else if (
+      !warnOnServerError(outcome.result, "duplicate createCache during a RUNNING sync", {
+        reason:
+          "KNOWN: docs specify 409; Peaka returns 5xx while the first sync is RUNNING " +
+          "(reproduced 2026-07-30). Status is reported, never asserted - only non-destructiveness is.",
+        context: `entered window at ${outcome.msToRunning}ms`,
+      })
+    ) {
       console.log(
         `duplicate createCache mid-sync returned ${outcome.result.status}, not the expected 500 - ` +
           `Peaka may have fixed this. Worth confirming by hand and updating README/HANDOFF.`
@@ -212,7 +219,9 @@ async function runTier1Races(ctx) {
       `deleteCache mid-sync -> ${outcome.result.status} (entered window: ${outcome.enteredWindow}, ` +
         `status at fire: ${outcome.statusAtFire})`
     );
-    assert(outcome.result.status < 500, `deleteCache mid-sync returned ${outcome.result.status} - a server error`);
+    assertNoServerError(outcome.result, "deleteCache mid-sync", {
+      message: `deleteCache mid-sync returned ${outcome.result.status} - a server error`,
+    });
 
     if (outcome.result.status === 200) {
       ctx.createdCacheIds = ctx.createdCacheIds.filter((id) => id !== cacheId);
@@ -256,7 +265,9 @@ async function runTier1Races(ctx) {
         continue;
       }
       console.log(`  ${label} -> ${o.value.status}`);
-      assert(o.value.status < 500, `${label} returned ${o.value.status} when raced - a server error`);
+      assertNoServerError(o.value, label, {
+        message: `${label} returned ${o.value.status} when raced - a server error`,
+      });
     }
 
     // The invariant that matters: two overlapping refreshes must not leave the
@@ -303,10 +314,9 @@ async function runTier1Races(ctx) {
     if (!outcome.enteredWindow) {
       console.log("  window missed - the incremental finished first; invariants still checked below");
     }
-    assert(
-      outcome.result.status < 500,
-      `cancelIncrementalUpdate returned ${outcome.result.status} on a running update - a server error`
-    );
+    assertNoServerError(outcome.result, "cancelIncrementalUpdate", {
+      message: `cancelIncrementalUpdate returned ${outcome.result.status} on a running update - a server error`,
+    });
 
     // The invariant: a cancel must never leave the cache stuck mid-flight.
     const settled = await waitForSettled(ctx, cacheId);
@@ -376,12 +386,11 @@ async function runTier1Races(ctx) {
     if (!outcome.enteredWindow) {
       console.log("  window missed - the refresh record never reported RUNNING; invariants still checked below");
     }
-    assert(
-      outcome.result.status < 500,
-      `cancelFullRefresh returned ${outcome.result.status} with the execution record ALREADY PRESENT ` +
-        `(status at fire: ${outcome.statusAtFire}). The known NPE needs a null record, so this is a ` +
-        `different failure: ${JSON.stringify(outcome.result.body).slice(0, 300)}`
-    );
+    assertNoServerError(outcome.result, "cancelFullRefresh", {
+      message: `cancelFullRefresh returned ${outcome.result.status} with the execution record ALREADY PRESENT ` +
+    `(status at fire: ${outcome.statusAtFire}). The known NPE needs a null record, so this is a ` +
+        `different failure: ${JSON.stringify(outcome.result.body).slice(0, 300)}`,
+        });
 
     const settled = await waitForSettled(ctx, cacheId, { pollMs: 3000, maxAttempts: 50 });
     assert(
@@ -458,10 +467,9 @@ async function runTier1Races(ctx) {
       `cancelMaterializedQueryRefresh mid-flight -> ${outcome.result.status} ` +
         `(entered window: ${outcome.enteredWindow}, status at fire: ${outcome.statusAtFire})`
     );
-    assert(
-      outcome.result.status < 500,
-      `cancelMaterializedQueryRefresh returned ${outcome.result.status} - a server error`
-    );
+    assertNoServerError(outcome.result, "cancelMaterializedQueryRefresh", {
+      message: `cancelMaterializedQueryRefresh returned ${outcome.result.status} - a server error`,
+    });
 
     // THE INVARIANT THAT MATTERS. How fast it settles varies wildly - measured
     // COMPLETED immediately, CANCELED after ~20s, and once neither within 90s

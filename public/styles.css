@@ -23,6 +23,31 @@
   --pending-fg: oklch(48% 0.01 260);
   --fail-border: oklch(88% 0.06 25);
 
+  /* Amber: a scenario that DID NOT RUN. Deliberately its own hue rather than
+     reusing pending-grey (which means "not started yet") or fail-red (which
+     means "ran and broke"). A skipped scenario verified nothing, and that has
+     to be visually distinct from both. */
+  --skip: oklch(72% 0.13 75);
+  --skip-bg: oklch(94% 0.07 75);
+  --skip-fg: oklch(45% 0.12 75);
+  --skip-border: oklch(85% 0.09 75);
+
+  /* Magenta: a scenario that PASSED but received a 5xx (doc2.txt rule 6 - a
+     server error is always a bug). Its own hue again: not red (it did not
+     fail), not amber (it did run), not green.
+
+     NOT orange, the obvious "warning" colour: skip already owns amber at 75deg
+     and fail owns red at 25deg, so orange (~45deg) would sit ~20deg from BOTH and
+     blur the one distinction this palette deliberately makes. 328deg is >=57deg
+     from every hue in use, and it survives colour-vision deficiency better -
+     under deuteranopia magenta shifts toward blue-grey while red and amber
+     both collapse toward dark yellow. Always paired with a distinct glyph
+     ("!") so colour is never the only signal. */
+  --warn: oklch(56% 0.19 328);
+  --warn-bg: oklch(94% 0.06 328);
+  --warn-fg: oklch(43% 0.17 328);
+  --warn-border: oklch(87% 0.08 328);
+
   --text-strong: oklch(28% 0.01 260);
   --text-medium: oklch(30% 0.01 260);
   --text-muted: oklch(50% 0.01 260);
@@ -312,6 +337,10 @@ body {
 .status-dot.running { background: var(--running); animation: spin 1s linear infinite; }
 .status-dot.pass { background: var(--pass); }
 .status-dot.fail { background: var(--fail); }
+/* .skipped was missing entirely - a skipped scenario's sidebar dot fell back
+   to the unstyled base. Fixed here alongside the new warn state. */
+.status-dot.skipped { background: var(--skip); }
+.status-dot.warn { background: var(--warn); }
 
 /* ---------- Center pane ---------- */
 
@@ -339,6 +368,8 @@ body {
 .badge-pass { background: var(--pass-bg); color: var(--pass-fg); }
 .badge-fail { background: var(--fail-bg); color: var(--fail-fg); }
 .badge-pending { background: var(--pending-bg); color: var(--pending-fg); }
+.badge-warn { background: var(--warn-bg); color: var(--warn-fg); }
+.badge-skipped { background: var(--skip-bg); color: var(--skip-fg); }
 
 .link-btn {
   border: none;
@@ -369,6 +400,8 @@ body {
 }
 .result-row.active { background: var(--active-bg); border-color: var(--running); }
 .result-row.fail-border { border-color: var(--fail-border); }
+.result-row.skip-border { border-color: var(--skip-border); }
+.result-row.warn-border { border-color: var(--warn-border); }
 
 .spinner-md {
   width: 14px;
@@ -394,6 +427,8 @@ body {
 }
 .result-icon.pass { background: var(--pass); }
 .result-icon.fail { background: var(--fail); }
+.result-icon.skipped { background: var(--skip); }
+.result-icon.warn { background: var(--warn); }
 
 .result-pending-dot {
   width: 8px;
@@ -422,6 +457,25 @@ body {
   max-width: 100%;
 }
 
+/* The skip reason sits where the step count normally goes - same truncation
+   rules, since a reason can be long. */
+.result-sub-skipped {
+  color: var(--skip-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+/* The 5xx summary sits where the step count goes - same truncation rules. */
+.result-sub-warn {
+  color: var(--warn-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
 .step-progress-track {
   margin-top: 5px;
   height: 3px;
@@ -437,6 +491,7 @@ body {
   transition: width 0.25s ease;
 }
 .step-progress-fill.failed { background: var(--fail-fg); }
+.step-progress-fill.warned { background: var(--warn-fg); }
 .result-duration {
   font-size: 12px;
   color: var(--text-mutedmore);
@@ -506,6 +561,8 @@ body {
 }
 .status-badge.pass { background: var(--pass-bg); color: var(--pass-fg); }
 .status-badge.fail { background: var(--fail-bg); color: var(--fail-fg); }
+.status-badge.skipped { background: var(--skip-bg); color: var(--skip-fg); }
+.status-badge.warn { background: var(--warn-bg); color: var(--warn-fg); }
 
 .detail-duration {
   font-size: 12px;
@@ -584,6 +641,7 @@ body {
 .step-icon-running { color: var(--pending-fg); }
 .step-icon-pass    { color: var(--pass-fg); }
 .step-icon-fail    { color: var(--fail-fg); }
+.step-icon-warn    { color: var(--warn-fg); }
 
 .step-label { flex: 1 1 auto; }
 

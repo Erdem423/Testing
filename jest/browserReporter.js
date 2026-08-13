@@ -29,6 +29,7 @@
  * "running" event for an individual test the way a hand-rolled runner could.
  */
 const bus = require("./reporterBus");
+const { SKIP_MARKER } = require("../helpers/preflight");
 
 class BrowserStreamReporter {
   onRunStart() {
@@ -36,11 +37,27 @@ class BrowserStreamReporter {
   }
 
   onTestCaseResult(test, testCaseResult) {
-    const status = testCaseResult.status === "passed" ? "PASS" : "FAIL";
+    // THREE outcomes, not two. A skipped test used to fall into the `: "FAIL"`
+    // branch here, so a scenario gated off for missing data showed up in the
+    // dashboard as a red failure. It is not a failure - it did not run - and
+    // conflating the two is exactly what makes a partial run hard to read.
+    const raw = testCaseResult.status;
+    const status = raw === "passed" ? "PASS" : raw === "pending" || raw === "skipped" ? "SKIP" : "FAIL";
+
+    // helpers/preflight.js appends "[SKIPPED: <reason>]" to the test name so
+    // the reason survives across process boundaries. Strip it back off here so
+    // the name still matches the scenario declared in meta.js, and send the
+    // reason as its own field.
+    const fullName = testCaseResult.fullName || testCaseResult.title || "";
+    const marker = fullName.indexOf(SKIP_MARKER);
+    const name = marker === -1 ? fullName : fullName.slice(0, marker).trim();
+    const skipReason = marker === -1 ? null : fullName.slice(marker + SKIP_MARKER.length).replace(/\]$/, "");
+
     bus.emit("event", {
       type: "result",
-      name: testCaseResult.fullName || testCaseResult.title,
+      name,
       status,
+      skipReason,
       duration: testCaseResult.duration,
       failureMessages: testCaseResult.failureMessages || [],
     });
@@ -51,6 +68,7 @@ class BrowserStreamReporter {
       type: "done",
       passed: results.numPassedTests,
       failed: results.numFailedTests,
+      skipped: results.numPendingTests,
       total: results.numTotalTests,
     });
   }

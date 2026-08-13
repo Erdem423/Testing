@@ -3,6 +3,35 @@
 Everything below was observed against a live Peaka project and a seeded Stripe sandbox, not inferred
 from documentation. Each entry states how it was measured so it can be re-checked or reported upstream.
 
+## Which findings are Peaka's, and which are the Stripe connector's
+
+Every finding here was originally measured against Stripe alone, so none of them could distinguish
+*"Peaka does this"* from *"Peaka's Stripe connector does this"*. A second connector settles it, which is
+why `tests/postgres/` exists. Measured 2026-08-04 against a 25,000-row Postgres table:
+
+| Behaviour | Stripe | Postgres | Verdict |
+|---|---|---|---|
+| 100-row read cap | `COUNT(*)` = 100 of 652 | **25000 of 25000**; `LIMIT 500` returns 500 | **Connector-specific** |
+| `WHERE` filters only the first 100 rows | yes | **no** — 2528 matches across the whole table | **Connector-specific** |
+| Table export cap | file holds 100 of 652 rows | **1000 of 1000 requested** | **Connector-specific** |
+| Materialized query cap | snapshot frozen at 100 of 505 rows | **25000 of 25000, in full** | **Connector-specific** |
+| Saved query, executed by name | returns the cap | **the whole table** | **Connector-specific** |
+| Table statistics endpoint | `400` "not being supported yet" | **`200`, real per-column stats** | **Connector-specific** |
+| Values arrive as strings regardless of declared type | yes | **yes** — `bigint` → `"25001"`, `double` → `"669.74"` | **Platform-wide** |
+| Caching available at all | yes | **no** — 0 of 40 tables, enforced | **Connector-class** |
+
+**The cap is a symptom of API pagination**, not a Peaka-wide defect: 100 is Stripe's List API page size,
+and Peaka does not walk the remaining pages. A database has no pages, so no cap — and the same fact
+explains why caching exists for Stripe and not for Postgres. **They are the same fact.** Caching exists to
+escape slow paginated APIs; Trino queries Postgres directly, so there is nothing to escape.
+
+That is a sharper claim than "the Stripe connector truncates reads", and it is now proven through **four
+independent subsystems** rather than one — `PG-B` (raw queries), `PG-C` (exports), `PG-D`
+(materialization) and `PG-H` (saved queries) all ask the same question of a different Peaka code path and
+get the same answer. Each is asserted, not just observed: every one of the four fails if its subsystem
+ever starts truncating a database connector's reads, and `PG-A`/`PG-G` fail if databases ever become
+cacheable or gain Stripe's statistics limitation.
+
 ## Summary
 
 | # | Finding | Severity | Status |
@@ -20,6 +49,14 @@ from documentation. Each entry states how it was measured so it can be re-checke
 | — | **A materialized query built mid-sync captures ZERO rows, permanently** (Tier 4) | **High** | Open, reported not asserted |
 | — | Incremental sync **removes deleted rows but reports `numberOfDeletedRecords: 0`** (see *Incremental really is incremental*) | Low | Open, reported not asserted |
 | 8 | Eleven smaller quirks that break naive clients, several contradicting the reference | Low | Open, documented |
+| 9 | **`SqlExec` cannot write at all** — INSERT/UPDATE/DELETE/CTAS all `400` | **High** | Open — the instructor's spec assumes DML through this endpoint; it does not exist |
+| 10 | **CSV import silently accepts a mapping to a nonexistent column and writes `NULL`** | **High** | Open, asserted as a pinned deviation |
+| 11 | **No row-level UPDATE/DELETE endpoint exists anywhere** for internal tables | **High** | Open, asserted as a capability gap |
+| 12 | **BI Table's `displayName` is never respected**, at creation or update, across all 8 column types — the update endpoint's response actively lies about it | Medium | Open, asserted as a pinned deviation |
+| 13 | **BI Table names collide after underscore-stripping** — two different requested names silently write to the same table | Medium | Open, asserted |
+| 14 | JSON columns are rejected for **both** internal table kinds, contradicting the spec's own claim that Peaka Table supports them | Medium | Open |
+| 15 | `getTableSample` returns a canned template unrelated to the real table, before or after real data exists | Low | Open |
+| 16 | Trino requires `OFFSET` before `LIMIT`; the reverse order (valid Postgres/MySQL) is a syntax error | Low | Documented, worth knowing when porting SQL |
 
 Three endpoint paths in this repo's client were also wrong; see [Corrected endpoint paths](#corrected-endpoint-paths).
 
@@ -272,7 +309,192 @@ red test. `C` caches only the four data tables it asserts on, all verified to sy
 **`500 Internal Server Error`** rather than a list of statuses. The project- and catalog-level
 equivalents both work, so this is specific to the schema variant.
 
-## 8. Smaller quirks
+## 9. `SqlExec` cannot write at all
+
+The instructor's spec for Peaka Table / Peaka BI Table (`doc2.txt`) assumes DML goes through `SqlExec`
+with fully-qualified table names (its own rule 7). It does not work — measured against a real table,
+every write statement is rejected:
+
+| Statement | Result |
+|---|---|
+| `SELECT` | `200`, works normally |
+| `INSERT` | `400 "Statement type 'Insert' is not allowed"` |
+| `UPDATE` | `400 "Statement type 'Update' is not allowed"` |
+| `DELETE` | `400 "Statement type 'Delete' is not allowed"` |
+| `CREATE TABLE AS SELECT` | `400 "Statement type 'CreateTableAsSelect' is not allowed"` |
+
+`SqlExec` is a **read-only query engine**. The only way to put data into a Peaka Table through the
+Partner API is `PtImport` (CSV, multipart upload) — confirmed by testing every statement type rather than
+assuming the endpoint's name implies its capability. This single fact invalidates roughly half of the
+spec's 24 scenarios as literally written, since most of them assume SQL-level INSERT/UPDATE/DELETE. The
+test suite (`tests/peaka-tables/`) is built around CSV import as the only real write path, and pins the
+absence of any alternative — see finding 11.
+
+## 10. CSV import silently accepts a bad mapping and writes `NULL`
+
+The spec's own rule expects a malformed import to be rejected outright, with **zero** rows landing
+(`PT-12`). Measured directly: three of its four "make the import fail" cases do fail cleanly. The fourth
+does not.
+
+Mapping a CSV import column to a **CSV header that doesn't exist in the file** does not error. It
+succeeds — `200`, `result.processed` matches the row count — and silently writes `NULL` into the mapped
+column for every row:
+
+```
+mapping: [{ name: "name", csvColumnName: "yok_boyle_baslik" }]   ← header doesn't exist in the CSV
+result: 200, processed: 2
+SELECT name FROM ... -> [null, null]
+```
+
+A typo in a mapping causes **silent data loss**, not a rejection. This is worse than the other three
+mapping errors (nonexistent target column, wrong header/index mode, malformed request JSON), which all
+fail as expected — it is the one case where the spec's blanket assumption ("all four fail, table ends up
+empty") is actively wrong, and the wrong answer is the dangerous one: data appears to have imported
+successfully while quietly missing a field.
+
+Asserted in `PT-12` as the real, measured behaviour — not the spec's assumption — so if Peaka ever starts
+rejecting this case, the test goes red and says exactly that.
+
+Two secondary quality issues, logged but not hard-asserted (message wording isn't something to pin): the
+nonexistent-target-column case leaks a raw backend SQL syntax error (`"syntax error at or near ')'"`)
+rather than naming the problem, and the header/index-mismatch case returns an unrelated MinIO storage
+error instead of a mapping-validation message.
+
+## 11. No row-level UPDATE/DELETE endpoint exists anywhere
+
+Following directly from finding 9: since `SqlExec` cannot write, the spec's `PT-08` — "Peaka Table's core
+value proposition is frequent, precise editing" — has no way to run as written. Confirmed there is no
+alternate REST path either, by probing every plausible shape against a real row's system id:
+
+```
+PATCH  /table/{t}/rows/{id}   -> 404
+PUT    /table/{t}/rows/{id}   -> 404
+DELETE /table/{t}/rows/{id}   -> 404
+PATCH  /table/{t}/row/{id}    -> 404
+POST   /table/{t}/rows/{id}   -> 404
+PATCH  /table/{t}/data/{id}   -> 404
+```
+
+All generic 404s — no such route exists, under any of the six shapes tried. There is currently **no way
+to edit or delete a single existing row** in a Peaka Table through the Partner API. Implemented as
+`PT-08: point-edit UPDATE/DELETE (capability gap)` — not a feature test, a pinned absence: it asserts the
+rejection is real (SQL-level and REST-level) and that the row is genuinely untouched afterward, not just
+that the API said no. If Peaka ships a row-edit path later, one of these assertions starts returning
+something other than a clean rejection and the test goes red to say so.
+
+## 12. BI Table's `displayName` is never respected
+
+Creating a BI Table column with `displayName: "original a"` does not store that value — it stores the
+column's own (stripped) name instead:
+
+```
+sent:    { name: "flag", displayName: "Flag Label" }
+stored:  { name: "flag", displayName: "flag" }
+```
+
+**Confirmed independent of the underscore-stripping bug** (finding 13) — a column named `flag`, which has
+no underscore to strip, still has its `displayName` silently overwritten. **Confirmed universal across
+all 8 supported column types** (VARCHAR/BIGINT/BOOLEAN/DECIMAL/TIMESTAMP/DATE/UUID/TIME) — every one
+shows identical behaviour at both creation and update time.
+
+The update endpoint makes this worse than a simple no-op: it returns `200` with a body that **echoes
+back the requested `displayName` as if it had been applied**:
+
+```
+PUT .../columns/cola  { displayName: "renamed a" }
+-> 200 { "id": "-1", "name": "cola", "displayName": "renamed a", ... }   looks like success
+
+GET .../columns  (immediately after, and again after a 3s wait)
+-> [{ "name": "cola", "displayName": "cola", ... }]                     never actually changed
+```
+
+The `id: "-1"` in the update response is a sentinel, not a real column id — a signal the endpoint may be
+constructing a synthetic "as if this worked" response rather than reading back what it actually wrote.
+Anyone relying on the API response to confirm a rename succeeded would be fooled; only a second,
+independent read reveals it did not happen. Peaka Table's equivalent (`updateInternalTableColumn`) works
+correctly for the same inputs, confirming this is BI-Table-specific rather than a general limitation.
+
+Asserted in `BT-06`, deliberately inverted from what `PT-04` checks for Peaka Table: it asserts the
+`displayName` **stays unchanged** after an update, with a comment noting that if this ever starts
+passing the other way, Peaka has fixed it and the assertion needs flipping.
+
+## 13. BI Table names collide after underscore-stripping
+
+BI Table's `create` endpoint silently strips **every** underscore from a requested table name, and the
+same happens to column names:
+
+```
+sent:    "e2e_test_underscore_probe"
+stored:  "e2etestunderscoreprobe"
+```
+
+That alone breaks the spec's naming convention (`e2e_auto_...` prefixes assumed to be literal), but the
+consequential part is worse: **two different requested names collide into one real table**, and the
+second create does not error as a duplicate:
+
+```
+create("e2e_auto_a_b")  -> 200, tableName: "eautoab"
+create("e2e_auto_ab")   -> 200, tableName: "eautoab"   -- same table, silently
+```
+
+Two scenario names that differ only in underscore placement are, underneath, the same table — and the
+API gives no indication that the second create didn't actually create anything new. `helpers/withTable.js`
+and every BI Table scenario now track and delete the name the **response** returns, never the name sent,
+and the leftover-sweep logic checks both the literal and stripped forms.
+
+One open question this raises but does not answer: whether the same collision reaches **data**, not just
+identifiers. It could not be tested — Peaka Table's data survives underscores intact (confirmed: a value
+like `"has_underscore"` round-trips through CSV import unchanged), but BI Table has no write path at all
+(finding 9 combined with no `import`/`sample` routes existing for `bitable`), so there is currently no way
+to check whether BI Table *values* are similarly mangled. Worth re-testing the moment a BI Table write
+path is found.
+
+## 14. JSON columns rejected for both internal table kinds
+
+The spec's own comparison table (`doc2.txt` section 0) claims Peaka Table supports JSON columns and only
+BI Table excludes it. Measured against a live Peaka Table:
+
+```
+addInternalTableColumns(t, [{ name: "payload", dataType: "JSON", ... }])
+-> 400 "No enum constant com.peaka.gateway.model.ColumnRequest.ColumnType.JSON"
+```
+
+The identical rejection, with the identical message, that BI Table gives. The live server's column-type
+enum has no JSON member for **either** table kind — this is a live-API fact contradicting the spec's own
+documentation, not a spec typo. It blocks `PT-03` and `PT-10` (both of which include a JSON column) as
+literally written, for both table types. The error message itself is a secondary quality issue worth
+separate note: it leaks an internal Java class name (`com.peaka.gateway.model.ColumnRequest.ColumnType`)
+directly to the API consumer.
+
+## 15. `getTableSample` returns a canned template, not real data
+
+The spec expects `PT-13` to return the table's real column names as a CSV header. Measured with a
+raw-text fetch (the JSON-only response parser in this repo's client cannot even read a `text/csv`
+response, which is itself worth knowing):
+
+| Table state | Response |
+|---|---|
+| Table doesn't exist | `200`, body is five blank lines |
+| Real table, declared columns `name`/`age`, zero rows | `200`, header is `text,name,age` — `text` was never declared — rows are `"sample text","sample text",<random int>` |
+| Same table, **after** importing real rows (`alice`/30, `bob`/40) | `200`, identical synthetic pattern — real data never appears |
+
+In every observed case the response is disconnected from both the table's real schema and its real
+content — it looks like a fixed example generator, unaffected by anything varied in the test. `PT-13`'s
+expectation that this reflects the real table does not hold as measured.
+
+## 16. Trino wants `OFFSET` before `LIMIT`
+
+`SELECT ... ORDER BY x LIMIT 20 OFFSET 140` — valid Postgres and MySQL — is a Trino syntax error:
+
+```
+"mismatched input 'OFFSET'. Expecting: <EOF>"
+```
+
+Trino's grammar is `[ORDER BY ...] [OFFSET n] [LIMIT n]`, the reverse order. Not a Peaka bug, but worth
+recording since it silently breaks SQL ported from a more common dialect rather than producing an obvious
+error about ordering — `mismatched input 'OFFSET'` reads like a typo, not a clause-order rule.
+
+## 17. Smaller quirks
 
 None are severe alone, but each silently breaks naive client code and several contradict the reference:
 
@@ -283,7 +505,7 @@ None are severe alone, but each silently breaks naive client code and several co
 | **`COMPLETED` doesn't mean "materialized"** | A freshly created materialized query reports `status: COMPLETED` with `lastExecutionStartTime` and `lastUpdateTime` both `null`. It means "nothing in flight", not "the data exists" |
 | **Stale status after triggering a refresh** | The status endpoint keeps returning the *previous* terminal status until the new run actually starts, so polling for "any terminal status" right after a refresh returns the old value instantly. **Waiting for a specific status only half-fixes it** — the stale value may already *be* the status you are waiting for, and then the poll is satisfied having observed nothing. The reliable signal is `lastExecutionStartTime` changing |
 | **Malformed cache schedules silently ignored** | `PUT /cache/{id}` with an invalid ISO-8601 expression returns `200` and keeps the old schedule, instead of the documented `400` |
-| **Table statistics unsupported for Stripe** | `400 "Catalog type: stripe is not being supported yet"` |
+| **Table statistics unsupported for Stripe** | `400 "Catalog type: stripe is not being supported yet"` — but works for Postgres (`200`, real per-column stats), so this is connector-specific, not an unbuilt Peaka feature. See the attribution table above |
 | **`transpileSql` returns `{query}`** | The reference documents `{result}` |
 | **Metadata refresh status is lower-kebab** | Returns `not-active`; the reference documents `NOT_ACTIVE` |
 | **Exporting an empty table fails** | `Export Table` on `transfers` (0 rows) returns `FAILED` with `"Trino-native export produced no files at s3a://export/..."`. A zero-row export produces no file rather than an empty one, so a caller cannot distinguish "no data" from "the job broke" |
@@ -293,9 +515,29 @@ None are severe alone, but each silently breaks naive client code and several co
 | **Moving a query creates a folder that outlives it** | Setting a query's path to one that doesn't exist creates a folder entity. Deleting the query does **not** remove it — verified: the folder was still listed afterwards. Anything moving queries must track and delete folders separately, which is why `helpers/cleanup.js` does |
 | **Credential validation is layered, and the layers report differently** | `credential: {}` and `credential: { token: "" }` are rejected by *credential* validation as `400 INVALID_CREDENTIALS`; omitting `credential` entirely is rejected earlier by *schema* validation as `400 Bad Request` — *"Missing property 'credential'"*. Good behaviour, asserted separately in `G` so a future collapse into one generic error would be noticed |
 | **`INVALID_CREDENTIALS` leaks an internal route** | The error body embeds an internal service path, `/internal/connection-secret/{projectId}/{uuid}`. Harmless to a legitimate caller but it exposes internal topology in a client-facing error — worth mentioning upstream |
+| **Double aggregates come back in scientific notation** | `SUM(amount)` over a Postgres `double` column returns the string `"1.254740786E7"` rather than `"12547407.86"`. `Number()` parses it, but a non-JS client or anything doing string comparison, regex matching or decimal parsing would break on it |
 | **Numeric columns come back as strings** | `SELECT amount FROM charges` returns `"15000"`, not `15000`. Any caller doing arithmetic gets string concatenation instead of addition. Asserted in `C` so that if Peaka starts returning real numbers the suite goes red and the change gets noticed |
 
 ---
+
+## Server errors now have their own channel
+
+Separate from a product finding: the instructor's spec states a firm rule (rule 6 of 8) — *a 5xx
+response is always a bug, never an acceptable outcome, even in a negative scenario*. This suite had no way
+to act on that. `helpers/assert.js` made no distinction between a `500` and a `400` at all, and **two
+tests were already passing green while receiving a `500`**, with the only trace a `console.log` that
+reached no report:
+
+- `M`'s schema-wide cache-status step — the known bug in finding 7, tolerated with `[200, 500]`
+- Tier 1's duplicate-`createCache`-mid-sync step — the known bug in finding 4, status logged, never
+  asserted
+
+Both are genuine Peaka bugs, already documented above, and outside this suite's control — making them
+permanently fail would just train everyone to ignore red in this suite, which is how a real regression
+would eventually hide. Both still pass. What changed is that every 5xx anywhere in the suite is now
+recorded with its scenario, step, and (where tolerated) the rationale, surfaced in a terminal banner, in
+`test-results/coverage.json`, and in the dashboard as a distinct state — visually separate from both a
+clean pass and a failure. See `helpers/serverError.js`.
 
 ## Verified working: cache refresh does pick up source changes
 

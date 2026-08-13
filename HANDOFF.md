@@ -137,7 +137,7 @@ suite now reproduces it deterministically in Tier 1.1, so `CONCURRENCY-SPEC.md` 
 
 **Deliberately does NOT use `jest.retryTimes()`.** That API discards the first failure's data and reports only the last attempt — directly in conflict with this project's whole approach (the duplicate-cache and `COUNT(*)`-cap findings were only caught because nothing silently retried past them). Instead: run once, retry once **only on failure**, keep both attempts' `junit.xml` results as artifacts regardless of outcome, and distinguish in the Slack notification between "clean pass" (silent), "flaky — passed on retry" (notified, investigate), and "genuinely failed twice" (notified, job fails).
 
-**Required GitHub secrets** (see README for the full table): `PEAKA_API_KEY`, `PEAKA_PROJECT_ID`, `STRIPE_TEST_TOKEN`, `PEAKA_CATALOG_ID`, `PEAKA_SCHEMA_NAME`, `NUM_CUSTOMERS`, `EXPECTED_CUSTOMER_COUNT_NON_CACHE`, optionally `SLACK_WEBHOOK_URL`.
+**Required GitHub secrets** (see README for the full table): `PEAKA_API_KEY`, `PEAKA_PROJECT_ID`, `STRIPE_TEST_TOKEN`, `PEAKA_CATALOG_ID`, `PEAKA_SCHEMA_NAME`, `EXPECTED_CUSTOMER_COUNT_NON_CACHE`, optionally the `PEAKA_PG_*` trio and `SLACK_WEBHOOK_URL`. (`NUM_CUSTOMERS` was removed — the real count is now read from Stripe's own API.)
 
 Dedicated unit tests (`jest/unit/`) were deliberately removed — this suite is scoped to the credentialed integration tests only now, so there's no separate fast/free tier to split CI around.
 

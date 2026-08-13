@@ -20,8 +20,12 @@ jobs:
       STRIPE_TEST_TOKEN: ${{ secrets.STRIPE_TEST_TOKEN }}
       PEAKA_CATALOG_ID: ${{ secrets.PEAKA_CATALOG_ID }}
       PEAKA_SCHEMA_NAME: ${{ secrets.PEAKA_SCHEMA_NAME }}
-      NUM_CUSTOMERS: ${{ secrets.NUM_CUSTOMERS }}
       EXPECTED_CUSTOMER_COUNT_NON_CACHE: ${{ secrets.EXPECTED_CUSTOMER_COUNT_NON_CACHE }}
+      # Optional - omit and the Postgres scenarios report as skipped, which
+      # fails the run unless ALLOW_INCOMPLETE=true. See the README.
+      PEAKA_PG_CATALOG_ID: ${{ secrets.PEAKA_PG_CATALOG_ID }}
+      PEAKA_PG_SCHEMA_NAME: ${{ secrets.PEAKA_PG_SCHEMA_NAME }}
+      PEAKA_PG_CONNECTION_ID: ${{ secrets.PEAKA_PG_CONNECTION_ID }}
       # No .env file needed - helpers/env.js already prioritizes real
       # environment variables over .env, so these secrets just work as-is.
 
