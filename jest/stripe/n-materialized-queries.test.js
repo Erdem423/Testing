@@ -13,12 +13,14 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
+const { gatedTest } = require("../../helpers/preflight");
 const { runMaterializedQueries } = require("../../tests/stripe/n-materialized-queries");
 
 let ctx = null;
 
-test(
+gatedTest(
   "N: Materialized Query Endpoints",
+  "stripe.configured",
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();

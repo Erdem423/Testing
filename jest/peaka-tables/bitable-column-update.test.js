@@ -1,21 +1,17 @@
-/**
- * CMP: join across two Peaka Tables - adapted from the doc's CMP-02.
- * See tests/peaka-tables/cmp-internal-join.js for why.
- */
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { runCmpInternalJoin } = require("../../tests/peaka-tables/cmp-internal-join");
+const { runBtColumnUpdate } = require("../../tests/peaka-tables/bitable-column-update");
 
 let ctx = null;
 
 test(
-  "CMP: join across two Peaka Tables",
+  "BI Table silently ignores displayName on every column change",
   async () => {
     requireCredentials("peaka-tables");
     ctx = buildFreshCtx("peaka-tables");
     ctx.runTag = runTag();
-    await withScenario("CMP: join across two Peaka Tables", () => runCmpInternalJoin(ctx));
+    await withScenario("BI Table silently ignores displayName on every column change", () => runBtColumnUpdate(ctx));
   },
   60000
 );

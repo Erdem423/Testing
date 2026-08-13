@@ -14,7 +14,7 @@ let ctx = null;
 // GATED on the connector being configured. Reuses the existing connection, so it needs no database credentials.
 gatedTest(
   "PG-I: Metadata Refresh Endpoints",
-  "postgres.anyTable",
+  "postgres.connectionId",
   async () => {
     requireCredentials("postgres");
     ctx = buildFreshCtx("postgres");

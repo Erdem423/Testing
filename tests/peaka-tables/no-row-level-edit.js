@@ -2,8 +2,8 @@ const { assert, assertEqual, assertStatusIn } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
 
 /**
- * PT-08: point-edit UPDATE/DELETE - a capability-gap pin, not the doc's
- * scenario as written.
+ * No row-level UPDATE or DELETE exists anywhere - a capability-gap pin, not
+ * the doc's PT-08 scenario as written.
  *
  * The doc expects Peaka Table's headline feature to be "frequent, precise
  * editing" - UPDATE one row, DELETE another, verify the rest untouched.
@@ -18,7 +18,7 @@ const { step } = require("../../helpers/step");
  *
  * So there is no known way to edit or remove a single existing row through
  * this API at all. This scenario pins that as a real, asserted fact rather
- * than silently omitting PT-08: if Peaka ever ships a row-edit path, one of
+ * than silently omitting it: if Peaka ever ships a row-edit path, one of
  * these steps starts returning something other than a clean rejection, and
  * the test goes red to say so.
  */
@@ -60,7 +60,8 @@ async function runPtNoRowEdit(ctx) {
     );
 
     // Not just "the API said no" - confirm the row is REALLY unchanged, the
-    // way PT-12 caught a case that said no on paper but wrote data anyway.
+    // way the bad-mapping scenario caught a case that said no on paper but
+    // wrote data anyway.
     const sel = await ctx.client.executeQuery(
       { statement: `SELECT label FROM "peaka"."table"."${TABLE_NAME}" WHERE id = 1` },
       "SIMPLE"

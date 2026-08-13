@@ -1,9 +1,9 @@
 /**
- * PT-11: CSV import - happy path
- * -------------------------------
+ * CSV import writes every row exactly as given
+ * ---------------------------------------------
  * The first scenario for the "peaka-tables" connector folder, and this
  * suite's first real write path into a Peaka Table - see
- * tests/peaka-tables/pt-11-import.js.
+ * tests/peaka-tables/csv-import-happy-path.js.
  *
  * Same shape as jest/postgres/*.test.js: buildFreshCtx("peaka-tables") is
  * the only thing that differs from a Stripe test file.
@@ -11,17 +11,17 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { runPtImport } = require("../../tests/peaka-tables/pt-11-import");
+const { runPtImport } = require("../../tests/peaka-tables/csv-import-happy-path");
 
 let ctx = null;
 
 test(
-  "PT-11: CSV import — happy path",
+  "CSV import writes every row exactly as given",
   async () => {
     requireCredentials("peaka-tables");
     ctx = buildFreshCtx("peaka-tables");
     ctx.runTag = runTag();
-    await withScenario("PT-11: CSV import — happy path", () => runPtImport(ctx));
+    await withScenario("CSV import writes every row exactly as given", () => runPtImport(ctx));
   },
   120000
 );

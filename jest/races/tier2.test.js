@@ -17,8 +17,15 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
+const { gateFor } = require("../../helpers/preflight");
 const { assertSafeToRaceOrThrow } = require("../../helpers/racePreflight");
 const { runTier2Races } = require("../../tests/races/tier2");
+
+// GATED like every other Stripe-dependent scenario: these cache `customers`,
+// so without Stripe credentials there is nothing to race against and the
+// tier must SKIP rather than throw. The beforeAll below is guarded too -
+// it performs live API calls that would fail the same way.
+const gate = gateFor("RACE-T2: Cross-resource conflicts", "stripe.customers");
 
 let ctx = null;
 
@@ -26,12 +33,13 @@ let ctx = null;
 // tests manufacture races, so overlapping them with anything else produces
 // failures that look like regressions but are not. That has happened twice.
 beforeAll(async () => {
+  if (!gate.ok) return; // scenario is skipped - nothing to guard
   requireCredentials();
   await assertSafeToRaceOrThrow(buildFreshCtx().client, (line) => console.log(line));
 }, 30000);
 
-test(
-  "RACE-T2: Cross-resource conflicts",
+(gate.ok ? test : test.skip)(
+  gate.name,
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();

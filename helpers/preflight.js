@@ -99,6 +99,13 @@ async function measureStripe() {
     return {
       configured: false,
       gates: {
+        // `configured` gates the scenarios that need the connector to EXIST
+        // but assert nothing about its data - connections, catalogs, metadata
+        // refresh, internal tables. Without it those scenarios threw on a
+        // missing credential instead of skipping, so a clone with no Stripe
+        // account saw seven hard failures next to six clean skips for one and
+        // the same cause.
+        configured: unavailable(reason),
         customers: unavailable(reason),
         charges: unavailable(reason),
         subscriptions: unavailable(reason),
@@ -132,6 +139,7 @@ async function measureStripe() {
     return {
       configured: false,
       gates: {
+        configured: unavailable(reason),
         customers: unavailable(reason),
         charges: unavailable(reason),
         subscriptions: unavailable(reason),
@@ -157,6 +165,9 @@ async function measureStripe() {
     schemaName,
     counts,
     gates: {
+      // Credentials are present and the catalog resolved - anything that only
+      // needs the connector to exist can run.
+      configured: open(),
       customers: counts.customers > 0 ? open() : unavailable("Stripe catalog has 0 customers"),
       charges: counts.charges > 0 ? open() : unavailable("Stripe catalog has 0 charges"),
       subscriptions: counts.subscriptions > 0 ? open() : unavailable("Stripe catalog has 0 subscriptions"),
@@ -175,7 +186,12 @@ async function measurePostgres() {
     const reason = "Postgres connector not configured (missing PEAKA_PG_* in .env)";
     return {
       configured: false,
-      gates: { largeTable: unavailable(reason), anyTable: unavailable(reason), credentials: unavailable(reason) },
+      gates: {
+        largeTable: unavailable(reason),
+        anyTable: unavailable(reason),
+        credentials: unavailable(reason),
+        connectionId: unavailable(reason),
+      },
     };
   }
 
@@ -199,7 +215,12 @@ async function measurePostgres() {
     const reason = `Postgres catalog '${catalogId}' not found (getCatalog returned ${catRes.status})`;
     return {
       configured: false,
-      gates: { largeTable: unavailable(reason), anyTable: unavailable(reason), credentials: unavailable(reason) },
+      gates: {
+        largeTable: unavailable(reason),
+        anyTable: unavailable(reason),
+        credentials: unavailable(reason),
+        connectionId: unavailable(reason),
+      },
     };
   }
   const catalogName = catRes.body.name;
@@ -219,7 +240,12 @@ async function measurePostgres() {
       configured: true,
       catalogName,
       schemaName,
-      gates: { largeTable: unavailable(reason), anyTable: unavailable(reason), credentials: unavailable(reason) },
+      gates: {
+        largeTable: unavailable(reason),
+        anyTable: unavailable(reason),
+        credentials: unavailable(reason),
+        connectionId: unavailable(reason),
+      },
     };
   }
 
@@ -261,6 +287,17 @@ async function measurePostgres() {
     largestTableRowCount: largestCount,
     gates: {
       anyTable: open(),
+      // PEAKA_PG_CONNECTION_ID is optional config, not a required env var
+      // (see tests/postgres/config.js) - but PG-G and PG-I create a catalog on
+      // an existing connection and cannot run without it. They used to assert
+      // on it mid-scenario and hard-fail; gating means they skip like anything
+      // else whose configuration is absent.
+      connectionId: process.env.PEAKA_PG_CONNECTION_ID
+        ? open()
+        : unavailable(
+            "PEAKA_PG_CONNECTION_ID is not set - these scenarios create a catalog on an existing " +
+              "connection, so they need its id (not its credentials)"
+          ),
       credentials:
         missingConnVars.length === 0
           ? open()
@@ -280,16 +317,211 @@ async function measurePostgres() {
 }
 
 /**
+ * A THIRD connector, mostly to see whether Postgres's two settled attribution
+ * questions (cap is connector-specific, string serialization is platform-wide)
+ * hold for a document store too, or were secretly relational-database-specific.
+ * They hold - see tests/mongodb/config.js. What's actually new is `_id`, which
+ * this does not measure (mo-a-discovery.js probes it directly against the
+ * configured schema; there is nothing to gate on, since the field's absence
+ * from listColumns is itself the finding, not a precondition for one).
+ *
+ * Structurally simpler than measurePostgres(): no separate connection-lifecycle
+ * env-var block, because this folder has no connection-CRUD scenario yet (the
+ * Postgres one, PG-E, took its own session to build).
+ */
+async function measureMongoDB() {
+  const check = checkCredentials("mongodb");
+  if (!check.ok) {
+    const reason = "MongoDB connector not configured (missing PEAKA_MONGO_* in .env)";
+    return {
+      configured: false,
+      gates: { anyTable: unavailable(reason), largeTable: unavailable(reason), connectionId: unavailable(reason) },
+    };
+  }
+
+  const client = new PeakaClient({
+    apiKey: check.values.PEAKA_API_KEY,
+    projectId: check.values.PEAKA_PROJECT_ID,
+  });
+  const catalogId = check.values.PEAKA_MONGO_CATALOG_ID;
+  const schemaName = check.values.PEAKA_MONGO_SCHEMA_NAME;
+
+  // MO-G and MO-I create a throwaway catalog on the existing connection rather
+  // than a live one - same reasoning as Postgres's connectionId gate.
+  const connectionIdGate = process.env.PEAKA_MONGO_CONNECTION_ID
+    ? open()
+    : unavailable(
+        "PEAKA_MONGO_CONNECTION_ID is not set - these scenarios create a catalog on an existing connection, " +
+          "so they need its id (not its credentials)"
+      );
+
+  const catRes = await client.getCatalog(catalogId);
+  if (!catRes.ok || !catRes.body || !catRes.body.name) {
+    if (catRes.status >= 500) {
+      throw new Error(
+        `Preflight could not reach Peaka to resolve PEAKA_MONGO_CATALOG_ID=${catalogId} ` +
+          `(getCatalog returned ${catRes.status}). Aborting rather than reporting "no data".`
+      );
+    }
+    const reason = `MongoDB catalog '${catalogId}' not found (getCatalog returned ${catRes.status})`;
+    return {
+      configured: false,
+      gates: { anyTable: unavailable(reason), largeTable: unavailable(reason), connectionId: connectionIdGate },
+    };
+  }
+  const catalogName = catRes.body.name;
+
+  const tablesRes = await client.listTables(catalogId, schemaName);
+  if (!tablesRes.ok) {
+    throw new Error(
+      `Preflight could not list tables in ${schemaName} (status ${tablesRes.status}): ` +
+        `${JSON.stringify(tablesRes.body)}`
+    );
+  }
+  const tableNames = (tablesRes.body || []).map((t) => t.tableName || t.name).filter(Boolean);
+
+  if (tableNames.length === 0) {
+    const reason = `MongoDB schema '${schemaName}' has no tables`;
+    return {
+      configured: true,
+      catalogName,
+      schemaName,
+      gates: { anyTable: unavailable(reason), largeTable: unavailable(reason), connectionId: connectionIdGate },
+    };
+  }
+
+  let largest = null;
+  let largestCount = -1;
+  for (const table of tableNames.slice(0, MAX_TABLES_TO_PROBE)) {
+    const count = await countRows(client, catalogName, schemaName, table);
+    if (count > largestCount) {
+      largestCount = count;
+      largest = table;
+    }
+    if (largestCount > CAP_PROBE_MIN_ROWS * 5) break;
+  }
+
+  return {
+    configured: true,
+    catalogName,
+    schemaName,
+    largestTable: largest,
+    largestTableRowCount: largestCount,
+    gates: {
+      anyTable: open(),
+      largeTable:
+        largestCount > CAP_PROBE_MIN_ROWS
+          ? open()
+          : unavailable(
+              `no collection in '${schemaName}' exceeds ${CAP_PROBE_MIN_ROWS} rows ` +
+                `(largest is '${largest}' with ${largestCount}), so the row-cap claim is untestable`
+            ),
+      connectionId: connectionIdGate,
+    },
+  };
+}
+
+/**
  * Called by jest.globalSetup.js. Throws if the environment cannot be measured -
  * that failure must abort the run rather than silently disabling scenarios.
  */
+/**
+ * The peaka-tables folder needs no connector credentials, so for a long time it
+ * had no branch here at all - which is exactly why every wrapper in it carries
+ * a note saying gatedTest must NOT be used, since gate() defaults OPEN for an
+ * unknown key and a gated call would silently always run while LOOKING gated.
+ *
+ * One thing there does need measuring: whether a BI Table with rows exists.
+ * BI Table has no write path through the Partner API (its rows can only be
+ * entered through Studio), so a scenario that reads them cannot seed its own
+ * fixture and must skip when the environment has none - the same position the
+ * Postgres folder is in, handled the same way.
+ */
+async function measurePeakaTables() {
+  const check = checkCredentials("peaka-tables");
+  if (!check.ok) {
+    const reason = "Core Peaka credentials missing";
+    return { configured: false, gates: { biTableWithData: unavailable(reason) } };
+  }
+
+  const client = new PeakaClient({
+    apiKey: check.values.PEAKA_API_KEY,
+    projectId: check.values.PEAKA_PROJECT_ID,
+  });
+
+  const list = await client.listBiTables();
+  if (!list.ok) {
+    if (list.status >= 500) {
+      throw new Error(`Preflight could not list BI Tables (${list.status}). Aborting rather than reporting "no data".`);
+    }
+    return {
+      configured: true,
+      gates: { biTableWithData: unavailable(`listBiTables returned ${list.status}`) },
+    };
+  }
+
+  // Find the first BI Table that actually holds rows, and remember which
+  // user-declared columns it has - a reader needs at least one to assert on.
+  for (const table of list.body || []) {
+    const name = table.tableName;
+    const res = await client.executeQuery(
+      { statement: `SELECT COUNT(*) AS cnt FROM "peaka"."bitable"."${name}"` },
+      "SIMPLE"
+    );
+    if (!res.ok || !res.body || !Array.isArray(res.body.data)) continue;
+    const rowCount = Number(res.body.data[0].cnt);
+    if (rowCount <= 0) continue;
+
+    const cols = await client.listBiTableColumns(name);
+    const userColumns = (cols.body || [])
+      .map((c) => c.name)
+      .filter((n) => n && !String(n).startsWith("_"));
+    if (userColumns.length === 0) continue;
+
+    return {
+      configured: true,
+      biTable: name,
+      biTableRowCount: rowCount,
+      biTableColumns: userColumns,
+      gates: { biTableWithData: open() },
+    };
+  }
+
+  return {
+    configured: true,
+    gates: {
+      biTableWithData: unavailable(
+        "no BI Table in this project holds rows - they can only be entered through Studio, " +
+          "so there is nothing for a reader to assert against"
+      ),
+    },
+  };
+}
+
 async function measure() {
   loadDotEnv();
   const report = {
     measuredAt: new Date().toISOString(),
     stripe: await measureStripe(),
     postgres: await measurePostgres(),
+    mongodb: await measureMongoDB(),
+    peakaTables: await measurePeakaTables(),
   };
+
+  // A COMPOSITE GATE, because one scenario needs TWO connectors. The federated
+  // join asks whether the Stripe cap survives a join, and proves the join
+  // mechanism is not itself the limiter by running the same join against
+  // Postgres as a control. Gating it on stripe alone left it hard-failing
+  // whenever Postgres was absent or pointed elsewhere - the same "gated on
+  // less than it needs" bug that PG-G and PG-I had.
+  const stripeReady = report.stripe.gates && report.stripe.gates.customers && report.stripe.gates.customers.ok;
+  const postgresReady = report.postgres.gates && report.postgres.gates.anyTable && report.postgres.gates.anyTable.ok;
+  report.peakaTables.gates.federatedJoin = stripeReady && postgresReady
+    ? open()
+    : unavailable(
+        `needs BOTH connectors - stripe.customers ${stripeReady ? "open" : "closed"}, ` +
+          `postgres.anyTable ${postgresReady ? "open" : "closed"}`
+      );
   fs.mkdirSync(path.dirname(PREFLIGHT_PATH), { recursive: true });
   fs.writeFileSync(PREFLIGHT_PATH, JSON.stringify(report, null, 2));
   return report;

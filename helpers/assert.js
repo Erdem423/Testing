@@ -14,9 +14,25 @@ function assertEqual(actual, expected, label = "value") {
   assert(actual === expected, `Expected ${label} to equal ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
 }
 
+/**
+ * `tolerancePct` is a FRACTION, not a percentage - 0.1 means 10%.
+ *
+ * MIN/MAX ARE LOAD-BEARING. Multiplying a NEGATIVE expected value by
+ * (1 - tol) and (1 + tol) produces the bounds in the wrong order, so the
+ * range check became unsatisfiable and the assertion could never pass:
+ *
+ *   expected -99.99, tol 0.001  ->  "lower" -99.890, "upper" -100.090
+ *   actual >= -99.890 && actual <= -100.090   // impossible, for any actual
+ *
+ * It never surfaced because every caller so far passes a positive expected
+ * value, but helpers/csvFixtures.js already carries a -99.99 fixture waiting
+ * to trip it. Found 2026-08-10 while planning the type-fidelity scenario.
+ */
 function assertApprox(actual, expected, tolerancePct, label = "value") {
-  const lower = expected * (1 - tolerancePct);
-  const upper = expected * (1 + tolerancePct);
+  const a = expected * (1 - tolerancePct);
+  const b = expected * (1 + tolerancePct);
+  const lower = Math.min(a, b);
+  const upper = Math.max(a, b);
   assert(
     actual >= lower && actual <= upper,
     `Expected ${label} to be within ${tolerancePct * 100}% of ${expected} (${lower.toFixed(1)}-${upper.toFixed(

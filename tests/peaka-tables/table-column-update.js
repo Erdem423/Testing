@@ -2,7 +2,7 @@ const { assert, assertEqual, assertStatusIn } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
 
 /**
- * PT-04: Column update and delete (Peaka Table).
+ * Peaka Table columns rename and delete cleanly (Peaka Table).
  *
  * updateInternalTableColumn needs the FULL column body, not a partial patch
  * - see helpers/peakaClient.js's comment on it. Verified 2026-08-06.

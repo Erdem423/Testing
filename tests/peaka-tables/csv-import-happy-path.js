@@ -3,13 +3,13 @@ const { step } = require("../../helpers/step");
 const { rowsToCsv } = require("../../helpers/csvFixtures");
 
 /**
- * PT-11: CSV import - happy path.
+ * CSV import writes every row exactly as given - the happy path.
  *
- * The doc's own literal import test, and this suite's first real write
- * path: SqlExec is SELECT-only (see helpers/peakaClient.js's executeQuery
+ * The doc's own literal import test (its PT-11), and this suite's first real
+ * write path: SqlExec is SELECT-only (see helpers/peakaClient.js's executeQuery
  * comment), and CSV import via PtImport is the only way to put data into a
  * Peaka Table. This scenario proves that path end to end before anything
- * downstream (PT-07/09/10, CMP-03) builds seed data on top of it.
+ * downstream builds seed data on top of it.
  *
  * Fixed deterministic name per the doc's rule 2 - no runTag() suffix, so a
  * leftover from a half-finished prior run is findable by this exact name.

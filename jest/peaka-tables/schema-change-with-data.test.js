@@ -1,24 +1,24 @@
 /**
- * PT-12: CSV import - mapping errors
- * ------------------------------------
- * See tests/peaka-tables/pt-12-import-errors.js for what this actually
- * asserts - it diverges from the doc's literal expectations for one of the
- * four cases (a live-verified silent-success gap, not a doc typo).
+ * Schema changes apply cleanly to a table that already holds data
+ * ----------------------------------------------------------------
+ * See tests/peaka-tables/schema-change-with-data.js. The most customer-shaped
+ * scenario in the folder: adding a column to a populated table, dropping one
+ * that holds data, and relabelling one - all working, all pinned.
  */
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { runPtImportErrors } = require("../../tests/peaka-tables/pt-12-import-errors");
+const { runPtSchemaChange } = require("../../tests/peaka-tables/schema-change-with-data");
 
 let ctx = null;
 
 test(
-  "PT-12: CSV import — mapping errors",
+  "Schema changes apply cleanly to a table that already holds data",
   async () => {
     requireCredentials("peaka-tables");
     ctx = buildFreshCtx("peaka-tables");
     ctx.runTag = runTag();
-    await withScenario("PT-12: CSV import — mapping errors", () => runPtImportErrors(ctx));
+    await withScenario("Schema changes apply cleanly to a table that already holds data", () => runPtSchemaChange(ctx));
   },
   120000
 );

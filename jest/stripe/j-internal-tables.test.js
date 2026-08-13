@@ -11,12 +11,14 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
+const { gatedTest } = require("../../helpers/preflight");
 const { runInternalTables } = require("../../tests/stripe/j-internal-tables");
 
 let ctx = null;
 
-test(
+gatedTest(
   "J: Internal Table Endpoints",
+  "stripe.configured",
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();
