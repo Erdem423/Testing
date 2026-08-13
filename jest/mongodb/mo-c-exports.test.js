@@ -1,27 +1,29 @@
 /**
- * PG-G: Catalog Endpoints
- * -----------------------
- * See tests/postgres/pg-g-catalogs.js for what this asserts and why.
+ * MO-C: Export Endpoints
+ * ----------------------
+ * The MongoDB half of the export-cap attribution claim - see
+ * tests/mongodb/mo-c-exports.js.
  */
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { gatedTest } = require("../../helpers/preflight");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { runPgCatalogs } = require("../../tests/postgres/pg-g-catalogs");
+const { runMoExports } = require("../../tests/mongodb/mo-c-exports");
 
 let ctx = null;
 
-// GATED on the connector being configured. Reuses the existing connection, so it needs no database credentials.
+// GATED on a collection large enough to tell an uncapped export from a
+// capped one - the entire claim of the headline step.
 gatedTest(
-  "PG-G: Catalog Endpoints",
-  "postgres.connectionId",
+  "MO-C: Export Endpoints",
+  "mongodb.largeTable",
   async () => {
-    requireCredentials("postgres");
-    ctx = buildFreshCtx("postgres");
+    requireCredentials("mongodb");
+    ctx = buildFreshCtx("mongodb");
     ctx.runTag = runTag();
-    await withScenario("PG-G: Catalog Endpoints", () => runPgCatalogs(ctx));
+    await withScenario("MO-C: Export Endpoints", () => runMoExports(ctx));
   },
-  120000
+  300000
 );
 
 afterAll(async () => {

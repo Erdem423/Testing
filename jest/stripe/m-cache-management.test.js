@@ -14,12 +14,14 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
+const { gatedTest } = require("../../helpers/preflight");
 const { runCacheManagement } = require("../../tests/stripe/m-cache-management");
 
 let ctx = null;
 
-test(
+gatedTest(
   "M: Cache Management Endpoints",
+  "stripe.configured",
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();

@@ -13,12 +13,14 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
+const { gatedTest } = require("../../helpers/preflight");
 const { runCatalogs } = require("../../tests/stripe/h-catalogs");
 
 let ctx = null;
 
-test(
+gatedTest(
   "H: Catalog Endpoints",
+  "stripe.configured",
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();

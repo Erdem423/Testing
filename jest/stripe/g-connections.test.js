@@ -12,12 +12,14 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
+const { gatedTest } = require("../../helpers/preflight");
 const { runConnections } = require("../../tests/stripe/g-connections");
 
 let ctx = null;
 
-test(
+gatedTest(
   "G: Connection Endpoints",
+  "stripe.configured",
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();

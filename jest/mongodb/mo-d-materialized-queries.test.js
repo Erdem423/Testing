@@ -1,27 +1,30 @@
 /**
- * PG-G: Catalog Endpoints
- * -----------------------
- * See tests/postgres/pg-g-catalogs.js for what this asserts and why.
+ * MO-D: Materialized Query Endpoints
+ * ----------------------------------
+ * The MongoDB half of the materialization-cap finding - see
+ * tests/mongodb/mo-d-materialized-queries.js.
  */
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { gatedTest } = require("../../helpers/preflight");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { runPgCatalogs } = require("../../tests/postgres/pg-g-catalogs");
+const { runMoMaterializedQueries } = require("../../tests/mongodb/mo-d-materialized-queries");
 
 let ctx = null;
 
-// GATED on the connector being configured. Reuses the existing connection, so it needs no database credentials.
+// GATED on a collection bigger than the live cap - without one, "the
+// materialized result is not capped" cannot be distinguished from "it
+// happens to be small".
 gatedTest(
-  "PG-G: Catalog Endpoints",
-  "postgres.connectionId",
+  "MO-D: Materialized Query Endpoints",
+  "mongodb.largeTable",
   async () => {
-    requireCredentials("postgres");
-    ctx = buildFreshCtx("postgres");
+    requireCredentials("mongodb");
+    ctx = buildFreshCtx("mongodb");
     ctx.runTag = runTag();
-    await withScenario("PG-G: Catalog Endpoints", () => runPgCatalogs(ctx));
+    await withScenario("MO-D: Materialized Query Endpoints", () => runMoMaterializedQueries(ctx));
   },
-  120000
+  400000
 );
 
 afterAll(async () => {

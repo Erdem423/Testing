@@ -1,27 +1,28 @@
 /**
- * PG-G: Catalog Endpoints
- * -----------------------
- * See tests/postgres/pg-g-catalogs.js for what this asserts and why.
+ * MO-H: Saved Query Endpoints
+ * ---------------------------
+ * See tests/mongodb/mo-h-queries.js for what this asserts and why.
  */
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { gatedTest } = require("../../helpers/preflight");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { runPgCatalogs } = require("../../tests/postgres/pg-g-catalogs");
+const { runMoQueries } = require("../../tests/mongodb/mo-h-queries");
 
 let ctx = null;
 
-// GATED on the connector being configured. Reuses the existing connection, so it needs no database credentials.
+// GATED on a large collection: the execute-by-name step asserts a saved
+// query sees the WHOLE collection rather than the Stripe cap.
 gatedTest(
-  "PG-G: Catalog Endpoints",
-  "postgres.connectionId",
+  "MO-H: Saved Query Endpoints",
+  "mongodb.largeTable",
   async () => {
-    requireCredentials("postgres");
-    ctx = buildFreshCtx("postgres");
+    requireCredentials("mongodb");
+    ctx = buildFreshCtx("mongodb");
     ctx.runTag = runTag();
-    await withScenario("PG-G: Catalog Endpoints", () => runPgCatalogs(ctx));
+    await withScenario("MO-H: Saved Query Endpoints", () => runMoQueries(ctx));
   },
-  120000
+  180000
 );
 
 afterAll(async () => {

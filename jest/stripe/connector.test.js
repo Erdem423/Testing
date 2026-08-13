@@ -110,9 +110,13 @@ function requireCredentials() {
   }
 }
 
-// B only reads metadata (schemas, tables, columns), so it needs no seeded
-// rows and is deliberately ungated.
-test.concurrent("B: Catalog & Schema Discovery", async () => {
+// B only reads metadata (schemas, tables, columns), so it needs no seeded rows
+// - but it does need the connector to EXIST. It used to be ungated entirely,
+// which meant a clone without a Stripe account got a hard failure here while
+// C and F beside it skipped cleanly for the same cause. stripe.configured is
+// the data-free gate: open whenever credentials resolve a catalog.
+const gB = gateFor("B: Catalog & Schema Discovery", "stripe.configured");
+(gB.ok ? test.concurrent : test.concurrent.skip)(gB.name, async () => {
   requireCredentials();
   ctxB = buildFreshCtx();
   await withScenario("B: Catalog & Schema Discovery", () => runCatalogSchemaDiscovery(ctxB));

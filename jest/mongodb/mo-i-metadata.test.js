@@ -1,30 +1,30 @@
 /**
- * PG-I: Metadata Refresh Endpoints
+ * MO-I: Metadata Refresh Endpoints
  * --------------------------------
- * See tests/postgres/pg-i-metadata.js for what this asserts and why.
+ * See tests/mongodb/mo-i-metadata.js for what this asserts and why.
  */
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { gatedTest } = require("../../helpers/preflight");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { runPgMetadata } = require("../../tests/postgres/pg-i-metadata");
+const { runMoMetadata } = require("../../tests/mongodb/mo-i-metadata");
 
 let ctx = null;
 
 // GATED on the connector being configured. Reuses the existing connection, so it needs no database credentials.
 gatedTest(
-  "PG-I: Metadata Refresh Endpoints",
-  "postgres.connectionId",
+  "MO-I: Metadata Refresh Endpoints",
+  "mongodb.connectionId",
   async () => {
-    requireCredentials("postgres");
-    ctx = buildFreshCtx("postgres");
+    requireCredentials("mongodb");
+    ctx = buildFreshCtx("mongodb");
     ctx.runTag = runTag();
-    await withScenario("PG-I: Metadata Refresh Endpoints", () => runPgMetadata(ctx));
+    await withScenario("MO-I: Metadata Refresh Endpoints", () => runMoMetadata(ctx));
   },
-  // 6 min: the refresh itself is budgeted ~5 (see MAX_POLL_ATTEMPTS in the
-  // scenario - a Postgres catalog refresh walks the whole database, unlike
-  // Stripe's 4 tables), plus room for the catalog create/delete around it.
-  360000
+  // The connect2 connection has only 2 collections across 2 databases, far
+  // smaller than Postgres's 10-schema instance (which needed 6 min) - kept
+  // generous rather than tuned tight, per mo-i-metadata.js's module comment.
+  240000
 );
 
 afterAll(async () => {
