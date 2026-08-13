@@ -3,7 +3,7 @@ const { step } = require("../../helpers/step");
 const { assertNoServerError } = require("../../helpers/serverError");
 
 /**
- * PT-12: CSV import - mapping errors.
+ * A bad mapping silently writes NULL instead of failing - the doc's PT-12.
  *
  * The doc expects all four mapping mistakes below to be rejected (4xx) and
  * the table to end up with zero rows - "yarim import kabul edilmez". Live

@@ -6,7 +6,11 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:races": "jest --config jest.races.config.js",
-    "web": "node server.js"
+    "web": "node server.js",
+    "check:refs": "node scripts/check-refs.js",
+    "check:meta": "node scripts/check-meta.js",
+    "check:names": "node scripts/check-names.js",
+    "check": "npm run check:meta && npm run check:names && npm run check:refs"
   },
   "engines": {
     "node": ">=18"

@@ -41,7 +41,7 @@ class PeakaClient {
   // that case: fetch sets its own `multipart/form-data; boundary=...` header,
   // and hand-setting application/json (what every other call needs) would
   // silently corrupt the upload.
-  async _request(method, path, { body, query, formData } = {}) {
+  async _request(method, path, { body, query, formData, raw } = {}) {
     let url = `${BASE_URL}${path}`;
     if (query) {
       const qs = new URLSearchParams(query).toString();
@@ -56,6 +56,14 @@ class PeakaClient {
       headers,
       body: formData || (body ? JSON.stringify(body) : undefined),
     });
+
+    // `raw` is for the handful of endpoints that don't return JSON at all
+    // (e.g. getTableSample's text/csv) - res.json() would throw and silently
+    // discard the real body as null otherwise.
+    if (raw) {
+      const text = await res.text();
+      return { status: res.status, ok: res.ok, body: text };
+    }
 
     let json = null;
     try {
@@ -427,10 +435,17 @@ class PeakaClient {
   // The live server's column-type enum has no JSON member for EITHER table
   // kind. This blocks PT-03/PT-10 in the source doc as literally specified.
   //
-  // Every table also carries SYSTEM COLUMNS you never declared - observed:
-  // _id (bigint, default abstract_schema_mapper.next_id()), _version, and
-  // _created_time. A "columns match exactly what I added" assertion must
-  // filter these out rather than expecting an exact-length match.
+  // Every table also carries SYSTEM COLUMNS you never declared. This comment
+  // used to list three; `SELECT *` on a six-column table returns FOURTEEN
+  // (corrected 2026-08-10), so the real set is EIGHT:
+  //   _id (bigint, default abstract_schema_mapper.next_id()), _version,
+  //   _created_time, _created_by, _last_modified_time, _last_modified_by,
+  //   _session, and a bare non-underscored `text` column.
+  // BI Table carries those plus _operation - see addBiTableColumns below.
+  //
+  // Two consequences: a "columns match exactly what I added" assertion must
+  // filter all eight, and `SELECT *` is NOT a safe way to read a row back -
+  // name the columns you want.
   addInternalTableColumns(tableName, columns) {
     return this._request("POST", `/data/projects/${this.projectId}/table/${tableName}/columns`, { body: columns });
   }
@@ -448,11 +463,17 @@ class PeakaClient {
   // false - csvColumnName is then rejected). Table name in the path, as with
   // create/delete above.
   //
-  // CONSTRAINTS ARE NOT ENFORCED ON IMPORT. Verified 2026-08-06: a table with
-  // an isUnique/isNotNull column happily imports two duplicate values -
-  // "processed": 2, COUNT(*) afterwards is 2. isNotNull/isUnique/defaultValue
-  // are accepted at column-creation time but not checked here, and there is
-  // no other write path to test them against - see PT-09 in the source doc.
+  // CONSTRAINTS: the earlier note here said isNotNull/isUnique/defaultValue
+  // are "accepted at column-creation time but not checked" on import. That was
+  // wrong on both counts, corrected 2026-08-11 and now asserted by the
+  // column-constraints scenario:
+  //   - isUnique and isNotNull are never STORED at all. Send true, read the
+  //     column straight back, and both come back false. There is no constraint
+  //     to enforce, so the import behaviour follows trivially: duplicates and
+  //     empty values both land with 200.
+  //   - defaultValue DOES round-trip AND is applied here: import a CSV whose
+  //     mappings omit that column entirely and the rows come back carrying the
+  //     default rather than NULL.
   createTableImport(tableName, { file, mappings, containsHeader = true }) {
     const fd = new FormData();
     fd.append("file", new Blob([file], { type: "text/csv" }), "import.csv");
@@ -460,12 +481,13 @@ class PeakaClient {
     return this._request("POST", `/data/projects/${this.projectId}/table/${tableName}/import`, { formData: fd });
   }
 
-  // Returns `Content-Type: text/csv`, but note: _request's JSON-only parsing
-  // (res.json()) can't read it - callers wanting the actual CSV need a raw
-  // fetch of this path, not this method's `.body`.
+  // Returns `Content-Type: text/csv`, not JSON - uses `raw: true` so `.body`
+  // is the real response text instead of _request's usual JSON.parse, which
+  // would throw on this and silently come back null (verified: it did,
+  // through this exact method, before `raw` existed).
   //
-  // NOT WHAT ITS NAME SUGGESTS. Verified 2026-08-06 with a raw-text fetch:
-  // this returns a CANNED TEMPLATE, unrelated to the real table.
+  // NOT WHAT ITS NAME SUGGESTS. Verified 2026-08-10 through this method with
+  // `raw: true`: this returns a CANNED TEMPLATE, unrelated to the real table.
   //   - A NONEXISTENT table: 200, body is five blank lines ("\n\n\n\n\n").
   //   - A real table with declared columns (name, age): 200, but the header
   //     is "text,name,age" - a "text" column that was never declared - and
@@ -478,7 +500,7 @@ class PeakaClient {
   // nothing we varied. PT-13 in the source doc expects real column names as
   // the header; that expectation does not hold as observed.
   getTableSample(tableName) {
-    return this._request("GET", `/data/projects/${this.projectId}/table/${tableName}/sample`);
+    return this._request("GET", `/data/projects/${this.projectId}/table/${tableName}/sample`, { raw: true });
   }
 
   // Requires the FULL column body, not a partial patch - verified 2026-08-06.
@@ -550,7 +572,8 @@ class PeakaClient {
   // Peaka Table's addInternalTableColumns respects displayName correctly
   // for the same column names and values, so this is BI-Table-specific.
   //
-  // Every BI Table also carries MORE system columns than Peaka Table:
+  // Every BI Table carries the same eight system columns a Peaka Table does
+  // (see addInternalTableColumns above) PLUS _operation - so nine in total:
   // _id, _version, _created_time, _created_by, _last_modified_time,
   // _last_modified_by, _session, _operation, and a non-underscored "text"
   // column that appears to be a default/example column, not something you

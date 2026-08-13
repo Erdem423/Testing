@@ -2,10 +2,10 @@ const { assert, assertEqual, assertStatusIn } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
 
 /**
- * CMP: join across two Peaka Tables - adapted from the doc's CMP-02, which
+ * Joins across two Peaka Tables return correct groupings - adapted from the doc's CMP-02, which
  * literally wants Peaka Table x Peaka BI Table.
  *
- * That version is blocked: BI Table has no known write path at all (no
+ * That version cannot be seeded through the Partner API (no
  * import/sample routes, no row-level endpoint - see helpers/peakaClient.js's
  * createBiTable comment), so there is no way to populate one with real data
  * to join against. This proves the same underlying claim - internal tables
@@ -25,7 +25,7 @@ const USERS = [
 ];
 const EVENT_COUNTS = { 1: 5, 2: 3, 3: 2 };
 
-async function runCmpInternalJoin(ctx) {
+async function runInternalTableJoin(ctx) {
   await step("clean up any leftover tables from a previous run", async () => {
     await ctx.client.deleteInternalTable(USERS_TABLE).catch(() => {});
     await ctx.client.deleteInternalTable(EVENTS_TABLE).catch(() => {});
@@ -113,4 +113,4 @@ async function runCmpInternalJoin(ctx) {
   });
 }
 
-module.exports = { runCmpInternalJoin };
+module.exports = { runInternalTableJoin };

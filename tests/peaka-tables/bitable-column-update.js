@@ -2,8 +2,9 @@ const { assert, assertEqual, assertStatusIn } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
 
 /**
- * BT-06: Column update and delete (BI Table) - PT-04's mirror, adapted
- * around a real divergence verified 2026-08-06.
+ * BI Table silently ignores displayName on every column change - the mirror of
+ * the Peaka Table column-update scenario, adapted around a real divergence
+ * verified 2026-08-06.
  *
  * Two independent bitable bugs are in play here - see
  * helpers/peakaClient.js's addBiTableColumns comment for the full
@@ -19,8 +20,9 @@ const { step } = require("../../helpers/step");
  * requested displayName back as if it worked - but a subsequent list (even
  * after a 3s wait, ruling out propagation lag) shows displayName still
  * equal to the column name. The update response LIES about what happened.
- * Compare PT-04: Peaka Table respects displayName correctly at both create
- * and update time - this is BI-Table-specific, not a general limitation.
+ * Compare the Peaka Table equivalent: it respects displayName correctly at
+ * both create and update time - so this is BI-Table-specific, not a general
+ * limitation.
  *
  * Column DELETE is unaffected by any of this - verified separately to
  * behave exactly like Peaka Table's.
@@ -79,8 +81,8 @@ async function runBtColumnUpdate(ctx) {
     });
     assertStatusIn(res, [200], "updateBiTableColumn");
 
-    // NOT the doc's expected "PtColList reflects the new displayName" -
-    // that's PT-04's real behavior, not BI Table's. Here the displayName
+    // NOT the doc's expected "PtColList reflects the new displayName" - that
+    // is Peaka Table's real behavior, not BI Table's. Here the displayName
     // does not persist, though the update call itself succeeds and its
     // response falsely echoes the requested value.
     const list = await ctx.client.listBiTableColumns(tableName);

@@ -1,17 +1,17 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { runBtColumnUpdate } = require("../../tests/peaka-tables/bt-06-column-update");
+const { runPtColumnUpdate } = require("../../tests/peaka-tables/table-column-update");
 
 let ctx = null;
 
 test(
-  "BT-06: Column update and delete (BI Table)",
+  "Peaka Table columns rename and delete cleanly",
   async () => {
     requireCredentials("peaka-tables");
     ctx = buildFreshCtx("peaka-tables");
     ctx.runTag = runTag();
-    await withScenario("BT-06: Column update and delete (BI Table)", () => runBtColumnUpdate(ctx));
+    await withScenario("Peaka Table columns rename and delete cleanly", () => runPtColumnUpdate(ctx));
   },
   60000
 );

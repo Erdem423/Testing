@@ -1,23 +1,26 @@
 /**
- * PT-08: point-edit UPDATE/DELETE - capability-gap pin, not the doc's
- * scenario as written. See tests/peaka-tables/pt-08-no-row-edit.js.
+ * Delete purges data and schema
+ * ------------------------------
+ * See tests/peaka-tables/table-delete-purge.js. Pins a guarantee the whole
+ * folder depends on: every scenario's "clean up any leftover table" step
+ * assumes delete really destroys what the table held.
  */
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { runPtNoRowEdit } = require("../../tests/peaka-tables/pt-08-no-row-edit");
+const { runPtDeletePurge } = require("../../tests/peaka-tables/table-delete-purge");
 
 let ctx = null;
 
 test(
-  "PT-08: point-edit UPDATE/DELETE (capability gap)",
+  "Deleting a table purges its data and its schema",
   async () => {
     requireCredentials("peaka-tables");
     ctx = buildFreshCtx("peaka-tables");
     ctx.runTag = runTag();
-    await withScenario("PT-08: point-edit UPDATE/DELETE (capability gap)", () => runPtNoRowEdit(ctx));
+    await withScenario("Deleting a table purges its data and its schema", () => runPtDeletePurge(ctx));
   },
-  60000
+  120000
 );
 
 afterAll(async () => {

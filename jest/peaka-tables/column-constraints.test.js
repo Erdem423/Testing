@@ -1,19 +1,27 @@
+/**
+ * Unique and not-null flags are silently discarded at column creation
+ * --------------------------------------------------------------------
+ * See tests/peaka-tables/column-constraints.js. Not an enforcement question:
+ * the two flags never round-trip at all, while defaultValue works end to end.
+ */
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { runPtColumnUpdate } = require("../../tests/peaka-tables/pt-04-column-update");
+const { runPtConstraints } = require("../../tests/peaka-tables/column-constraints");
 
 let ctx = null;
 
 test(
-  "PT-04: Column update and delete",
+  "Unique and not-null flags are silently discarded at column creation",
   async () => {
     requireCredentials("peaka-tables");
     ctx = buildFreshCtx("peaka-tables");
     ctx.runTag = runTag();
-    await withScenario("PT-04: Column update and delete", () => runPtColumnUpdate(ctx));
+    await withScenario("Unique and not-null flags are silently discarded at column creation", () =>
+      runPtConstraints(ctx)
+    );
   },
-  60000
+  120000
 );
 
 afterAll(async () => {
