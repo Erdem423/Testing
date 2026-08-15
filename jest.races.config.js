@@ -11,7 +11,10 @@
  */
 module.exports = {
   testEnvironment: "node",
-  testMatch: ["**/jest/races/**/*.test.js"],
+  // Covers both connectors' race suites - jest/races/ (Stripe) and
+  // jest/hubspot-races/ (HubSpot). maxWorkers: 1 below still applies across
+  // both, so they never race each other either.
+  testMatch: ["**/jest/races/**/*.test.js", "**/jest/hubspot-races/**/*.test.js"],
   // 1200s, not 600s. Tier 1 was measured at 407s under contention against the
   // old 600s ceiling - close enough that a slower day would report a TIMEOUT
   // rather than the real failure, which is exactly the misleading-failure mode

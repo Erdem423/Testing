@@ -1,5 +1,14 @@
 # Peaka × Stripe Connector Test Suite — Project Handoff
 
+> ⚠️ **OUTDATED — predates HubSpot and the dashboard rework.** This snapshot was written when the suite
+> was Stripe-only and the web dashboard read a single static project from `.env`. Since then: a HubSpot
+> connector was added (see `tests/hubspot/`), and the dashboard became a real multi-project app with its
+> own Connect screen, a killable/Stop-able run, and hardened security posture (see `README.md`'s "The web
+> dashboard" section — that is the current source of truth, not this file). Sections 1-2 and 8 below
+> describe the *old* architecture and should not be trusted for how the dashboard works today; sections 3,
+> 6, 7 and 9 (the Peaka product findings, CI notes, gotchas, and next steps) are still accurate and worth
+> reading. Kept for the historical reasoning, not as a current architecture reference.
+
 **Purpose of this document**: everything needed to pick up this project cold, in a new environment or a new AI session, without having to reconstruct the reasoning behind decisions from scratch. Written after an extensive, iterative build process — the "why" behind each choice matters as much as the "what."
 
 ---

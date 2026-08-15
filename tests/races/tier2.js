@@ -29,7 +29,7 @@ async function runTier2Races(ctx) {
     const conn = await ctx.client.createConnection({
       name,
       type: "stripe",
-      credential: { token: ctx.stripeToken },
+      credential: { token: ctx.token },
     });
     assertStatus(conn, 200, `createConnection(${label})`);
     ctx.createdConnectionIds.push(conn.body.id);

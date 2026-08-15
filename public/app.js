@@ -1,6 +1,339 @@
 (() => {
   "use strict";
 
+  // ---------- DOM refs: views ----------
+  const viewHomeEl = document.getElementById("view-home");
+  const viewProjectEl = document.getElementById("view-project");
+  const viewRunnerEl = document.getElementById("view-runner");
+
+  const homeLoadingEl = document.getElementById("home-loading");
+
+  const connectFormEl = document.getElementById("connect-form");
+  const apiKeyInputEl = document.getElementById("api-key-input");
+  const toggleKeyVisibilityBtn = document.getElementById("toggle-key-visibility");
+  const connectBtn = document.getElementById("connect-btn");
+  const connectErrorEl = document.getElementById("connect-error");
+
+  const projectIdFormEl = document.getElementById("project-id-form");
+  const projectIdInputEl = document.getElementById("project-id-input");
+  const connectProjectBtn = document.getElementById("connect-project-btn");
+  const connectProjectErrorEl = document.getElementById("connect-project-error");
+
+  const homeConnectedEl = document.getElementById("home-connected");
+  const connectedLabelEl = document.getElementById("connected-label");
+  const disconnectBtn = document.getElementById("disconnect-btn");
+  const homeSwitchAccountBtn = document.getElementById("home-switch-account-btn");
+  const projectGridEl = document.getElementById("project-grid");
+  const homeEmptyEl = document.getElementById("home-empty");
+
+  const breadcrumbHomeBtn = document.getElementById("breadcrumb-home");
+  const breadcrumbProjectEl = document.getElementById("breadcrumb-project");
+  const projectTitleEl = document.getElementById("project-title");
+  const projectLoadingEl = document.getElementById("project-loading");
+  const projectErrorEl = document.getElementById("project-error");
+  const connectorGridEl = document.getElementById("connector-grid");
+  const projectEmptyEl = document.getElementById("project-empty");
+  const projectBackBtn = document.getElementById("project-back-btn");
+  const projectSwitchAccountBtn = document.getElementById("project-switch-account-btn");
+
+  const breadcrumbRunnerHomeBtn = document.getElementById("breadcrumb-runner-home");
+  const breadcrumbRunnerProjectBtn = document.getElementById("breadcrumb-runner-project");
+  const breadcrumbRunnerConnectorEl = document.getElementById("breadcrumb-runner-connector");
+  const runnerBackBtn = document.getElementById("runner-back-btn");
+  const runnerSwitchAccountBtn = document.getElementById("runner-switch-account-btn");
+
+  // Icon shown on a connector card when it has no matching tests/<type>/
+  // folder yet (e.g. MongoDB, Postgres, Google Ads) - meta.js's own icon
+  // (via /api/peaka/projects/:id/connectors) wins whenever one exists.
+  const FALLBACK_CONNECTOR_ICON = "🔌";
+
+  // Which Peaka project + connection the runner view is currently scoped to
+  // - threaded into every /api/config-status and /api/run-stream call so the
+  // server resolves catalog/schema dynamically instead of from .env. See
+  // server.js's applyDynamicConnectorConfig().
+  let selectedProject = null; // { id, name }
+  let selectedConnector = null; // { connectionId, folderId, displayName, icon }
+
+  function showView(name) {
+    viewHomeEl.classList.toggle("hidden", name !== "home");
+    viewProjectEl.classList.toggle("hidden", name !== "project");
+    viewRunnerEl.classList.toggle("hidden", name !== "runner");
+  }
+
+  function hideAllHomeCards() {
+    connectFormEl.classList.add("hidden");
+    projectIdFormEl.classList.add("hidden");
+    homeConnectedEl.classList.add("hidden");
+  }
+
+  /**
+   * The home screen: connect with a Partner API key, resolve a project (if
+   * the key can only see one - see server.js's classifyApiKey), then pick a
+   * project. Always does a fresh /api/peaka/session check rather than
+   * trusting client-side state, since the server is the source of truth for
+   * whether a key/project is still valid.
+   */
+  async function showHome() {
+    selectedProject = null;
+    selectedConnector = null;
+    showView("home");
+    homeLoadingEl.classList.remove("hidden");
+    hideAllHomeCards();
+
+    let data;
+    try {
+      const res = await fetch("/api/peaka/session");
+      data = await res.json();
+    } catch (err) {
+      data = { ok: false, connected: false, error: err.message };
+    }
+
+    homeLoadingEl.classList.add("hidden");
+    renderHome(data);
+  }
+
+  function renderHome(data) {
+    hideAllHomeCards();
+    homeSwitchAccountBtn.classList.toggle("hidden", !data.connected);
+
+    if (!data.connected) {
+      connectFormEl.classList.remove("hidden");
+      if (data.error) {
+        connectErrorEl.textContent = data.error;
+        connectErrorEl.classList.remove("hidden");
+      } else {
+        connectErrorEl.classList.add("hidden");
+      }
+      apiKeyInputEl.focus();
+      return;
+    }
+
+    if (data.mode === "scoped-needs-project") {
+      projectIdFormEl.classList.remove("hidden");
+      projectIdInputEl.focus();
+      return;
+    }
+
+    // mode "multi" (several projects) or "single" (exactly one, already
+    // resolved) - both render as the same project grid, just with a
+    // different project count.
+    const projects = data.mode === "single" ? [data.project] : data.projects;
+    homeConnectedEl.classList.remove("hidden");
+    connectedLabelEl.textContent =
+      projects.length === 1 && data.mode === "single" ? "Connected to 1 project" : `Connected · ${projects.length} project${projects.length === 1 ? "" : "s"}`;
+
+    if (projects.length === 0) {
+      homeEmptyEl.classList.remove("hidden");
+      projectGridEl.classList.add("hidden");
+      return;
+    }
+
+    homeEmptyEl.classList.add("hidden");
+    projectGridEl.innerHTML = "";
+    for (const project of projects) {
+      projectGridEl.appendChild(buildProjectCard(project));
+    }
+    projectGridEl.classList.remove("hidden");
+  }
+
+  connectFormEl.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const apiKey = apiKeyInputEl.value.trim();
+    if (!apiKey) return;
+    connectBtn.disabled = true;
+    connectErrorEl.classList.add("hidden");
+    let data;
+    try {
+      const res = await fetch("/api/peaka/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey }),
+      });
+      data = await res.json();
+    } catch (err) {
+      data = { ok: false, error: err.message };
+    }
+    connectBtn.disabled = false;
+    if (!data.ok) {
+      connectErrorEl.textContent = data.error;
+      connectErrorEl.classList.remove("hidden");
+      return;
+    }
+    apiKeyInputEl.value = "";
+    await showHome();
+  });
+
+  toggleKeyVisibilityBtn.addEventListener("click", () => {
+    apiKeyInputEl.type = apiKeyInputEl.type === "password" ? "text" : "password";
+  });
+
+  projectIdFormEl.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const projectId = projectIdInputEl.value.trim();
+    if (!projectId) return;
+    connectProjectBtn.disabled = true;
+    connectProjectErrorEl.classList.add("hidden");
+    let data;
+    try {
+      const res = await fetch("/api/peaka/connect-project", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      });
+      data = await res.json();
+    } catch (err) {
+      data = { ok: false, error: err.message };
+    }
+    connectProjectBtn.disabled = false;
+    if (!data.ok) {
+      connectProjectErrorEl.textContent = data.error;
+      connectProjectErrorEl.classList.remove("hidden");
+      return;
+    }
+    await showHome();
+  });
+
+  // Shared by every "switch account" entry point (the home view's connected
+  // bar, and the always-visible topbar buttons on the project/runner views)
+  // so a second person can hand off to their own key from wherever the first
+  // person left off, without hunting for a specific screen first.
+  async function disconnectAndGoHome() {
+    await fetch("/api/peaka/disconnect", { method: "POST" });
+    await showHome();
+  }
+  disconnectBtn.addEventListener("click", disconnectAndGoHome);
+  homeSwitchAccountBtn.addEventListener("click", disconnectAndGoHome);
+  projectSwitchAccountBtn.addEventListener("click", disconnectAndGoHome);
+  runnerSwitchAccountBtn.addEventListener("click", disconnectAndGoHome);
+
+  projectBackBtn.addEventListener("click", showHome);
+  runnerBackBtn.addEventListener("click", () => selectedProject && showProject(selectedProject));
+
+  function buildProjectCard(project) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "card project-card";
+
+    const icon = document.createElement("span");
+    icon.className = "card-icon";
+    icon.textContent = "📁";
+    card.appendChild(icon);
+
+    const info = document.createElement("div");
+    info.className = "card-info";
+    const name = document.createElement("span");
+    name.className = "card-title";
+    name.textContent = project.name;
+    info.appendChild(name);
+    if (project.workspaceName) {
+      const sub = document.createElement("span");
+      sub.className = "card-sub";
+      sub.textContent = project.workspaceName;
+      info.appendChild(sub);
+    }
+    card.appendChild(info);
+
+    card.addEventListener("click", () => showProject(project));
+    return card;
+  }
+
+  async function showProject(project) {
+    selectedProject = project;
+    selectedConnector = null;
+    showView("project");
+    projectTitleEl.textContent = project.name;
+    breadcrumbProjectEl.textContent = project.name;
+    projectLoadingEl.classList.remove("hidden");
+    projectErrorEl.classList.add("hidden");
+    connectorGridEl.classList.add("hidden");
+    projectEmptyEl.classList.add("hidden");
+
+    let data;
+    try {
+      const res = await fetch(`/api/peaka/projects/${encodeURIComponent(project.id)}/connectors`);
+      data = await res.json();
+    } catch (err) {
+      data = { ok: false, error: err.message };
+    }
+
+    projectLoadingEl.classList.add("hidden");
+    if (!data.ok) {
+      projectErrorEl.textContent = data.error;
+      projectErrorEl.classList.remove("hidden");
+      return;
+    }
+    if (data.connectors.length === 0) {
+      projectEmptyEl.classList.remove("hidden");
+      return;
+    }
+
+    connectorGridEl.innerHTML = "";
+    for (const connector of data.connectors) {
+      connectorGridEl.appendChild(buildConnectorCard(project, connector));
+    }
+    connectorGridEl.classList.remove("hidden");
+  }
+
+  function buildConnectorCard(project, connector) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "card connector-card" + (connector.hasTests ? "" : " card-disabled");
+    card.disabled = !connector.hasTests;
+
+    const icon = document.createElement("span");
+    icon.className = "card-icon";
+    icon.textContent = connector.icon || FALLBACK_CONNECTOR_ICON;
+    card.appendChild(icon);
+
+    const info = document.createElement("div");
+    info.className = "card-info";
+    const name = document.createElement("span");
+    name.className = "card-title";
+    name.textContent = connector.name;
+    info.appendChild(name);
+    const sub = document.createElement("span");
+    sub.className = "card-sub";
+    sub.textContent = connector.hasTests ? `${connector.scenarioCount} scenarios` : "No test suite yet";
+    info.appendChild(sub);
+    card.appendChild(info);
+
+    if (connector.hasTests) {
+      card.addEventListener("click", () => showRunner(project, connector));
+    }
+    return card;
+  }
+
+  async function showRunner(project, connector) {
+    selectedProject = project;
+    selectedConnector = connector;
+    showView("runner");
+
+    breadcrumbRunnerProjectBtn.textContent = project.name;
+    breadcrumbRunnerConnectorEl.textContent = connector.displayName;
+
+    // Reset any previous connector's state - the left/center/right panes are
+    // rebuilt from scratch for whichever connector was just picked.
+    folderTreeEl.innerHTML = "";
+    folderStates = {};
+    currentFolderId = null;
+
+    const folderRes = await fetch("/api/folders");
+    const folderData = await folderRes.json();
+    const folder = folderData.folders.find((f) => f.id === connector.folderId);
+    if (!folder) return; // shouldn't happen - hasTests already confirmed this folder exists
+
+    await addFolderSection(folder);
+    currentFolderId = folder.id;
+    renderCenterList();
+    renderRightPanel();
+    updateButtonStates();
+    await checkConfig(folder.id);
+  }
+
+  breadcrumbHomeBtn.addEventListener("click", showHome);
+  breadcrumbRunnerHomeBtn.addEventListener("click", showHome);
+  breadcrumbRunnerProjectBtn.addEventListener("click", () => selectedProject && showProject(selectedProject));
+
   // ---------- DOM refs (things that exist once, regardless of folder count) ----------
   const folderTreeEl = document.getElementById("folder-tree");
 
@@ -8,6 +341,7 @@
   const runSelectedBtn = document.getElementById("run-selected-btn");
   const runSpinner = document.getElementById("run-spinner");
   const runSelectedLabel = document.getElementById("run-selected-label");
+  const stopRunBtn = document.getElementById("stop-run-btn");
 
   const configWarning = document.getElementById("config-warning");
   const configErrors = document.getElementById("config-errors");
@@ -16,6 +350,10 @@
   const passCountEl = document.getElementById("pass-count");
   const badgeFailEl = document.getElementById("badge-fail");
   const failCountEl = document.getElementById("fail-count");
+  const badgeSkipEl = document.getElementById("badge-skip");
+  const skipCountEl = document.getElementById("skip-count");
+  const badgeStoppedEl = document.getElementById("badge-stopped");
+  const stoppedCountEl = document.getElementById("stopped-count");
   const badgePendingEl = document.getElementById("badge-pending");
   const pendingCountEl = document.getElementById("pending-count");
   const clearBtn = document.getElementById("clear-btn");
@@ -66,25 +404,9 @@
   }
 
   // ---------- Data loading ----------
-  async function loadFolders() {
-    const res = await fetch("/api/folders");
-    const data = await res.json();
-
-    folderTreeEl.innerHTML = "";
-    folderStates = {};
-
-    for (const folder of data.folders) {
-      await addFolderSection(folder);
-    }
-
-    if (data.folders.length > 0 && !currentFolderId) {
-      currentFolderId = data.folders[0].id;
-    }
-    renderCenterList();
-    renderRightPanel();
-    updateButtonStates();
-  }
-
+  // Builds the left-pane section for ONE folder (the connector picked in
+  // showRunner()) - the dashboard now only ever shows a single connector's
+  // scenarios at a time, scoped to the project+connection chosen upstream.
   async function addFolderSection(folder) {
     const scenariosRes = await fetch(`/api/scenarios?folder=${encodeURIComponent(folder.id)}`);
     const scenariosData = await scenariosRes.json();
@@ -148,7 +470,10 @@
     searchInput.placeholder = "Search scenarios...";
     searchInput.addEventListener("input", () => {
       state.search = searchInput.value;
-      currentFolderId = folder.id;
+      if (currentFolderId !== folder.id) {
+        currentFolderId = folder.id;
+        checkConfig(folder.id);
+      }
       renderFolderScenarioList(folder.id);
     });
     controls.appendChild(searchInput);
@@ -164,7 +489,10 @@
     selectAllLabel.appendChild(totalCountEl);
     selectAllLabel.appendChild(document.createTextNode(")"));
     selectAllCheckbox.addEventListener("change", () => {
-      currentFolderId = folder.id;
+      if (currentFolderId !== folder.id) {
+        currentFolderId = folder.id;
+        checkConfig(folder.id);
+      }
       state.selected = selectAllCheckbox.checked ? new Set(state.scenarios.map((sc) => sc.name)) : new Set();
       renderFolderScenarioList(folder.id);
       renderCenterList();
@@ -186,8 +514,16 @@
     renderFolderScenarioList(folder.id);
   }
 
-  async function checkConfig() {
-    const res = await fetch("/api/config-status");
+  // Re-checked per folder, not once globally - checkCredentials() is now
+  // per-connector (helpers/env.js), so "config OK" for the Stripe folder
+  // says nothing about whether HubSpot's is configured, and vice versa.
+  // Defaults to currentFolderId so existing no-arg call sites keep working.
+  async function checkConfig(folderId = currentFolderId) {
+    let url = `/api/config-status?folder=${encodeURIComponent(folderId || "")}`;
+    if (selectedProject && selectedConnector) {
+      url += `&projectId=${encodeURIComponent(selectedProject.id)}&connectionId=${encodeURIComponent(selectedConnector.connectionId)}`;
+    }
+    const res = await fetch(url);
     const data = await res.json();
     configOk = data.ok;
     if (data.ok) {
@@ -225,12 +561,18 @@
     const state = folderStates[folderId];
     const row = document.createElement("div");
     row.className = "scenario-row";
+    // Highlighted when this is the scenario whose detail/history is showing
+    // in the right panel - independent of whether it's checked for running.
+    if (state.activeResultName === sc.name) row.classList.add("active");
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = state.selected.has(sc.name);
     checkbox.addEventListener("change", () => {
-      currentFolderId = folderId;
+      if (currentFolderId !== folderId) {
+        currentFolderId = folderId;
+        checkConfig(folderId);
+      }
       if (checkbox.checked) state.selected.add(sc.name);
       else state.selected.delete(sc.name);
       renderFolderScenarioList(folderId);
@@ -249,6 +591,22 @@
     subEl.textContent = `${sc.steps.length} steps · ${sc.category}`;
     info.appendChild(nameEl);
     info.appendChild(subEl);
+    // Clicking the name/sub area (NOT the checkbox) shows this scenario's
+    // last result and step history in the right panel - same detail view the
+    // center "Test Results" list already opens on click, just reachable
+    // directly from the left tree without needing to check + run it first.
+    // Works even for a scenario with no result yet (renderRightPanel already
+    // renders a "Not run yet" state for that case).
+    info.addEventListener("click", () => {
+      if (currentFolderId !== folderId) {
+        currentFolderId = folderId;
+        checkConfig(folderId);
+      }
+      state.activeResultName = sc.name;
+      renderFolderScenarioList(folderId);
+      renderCenterList();
+      renderRightPanel();
+    });
     row.appendChild(info);
 
     const dot = document.createElement("span");
@@ -309,10 +667,10 @@
       const spinner = document.createElement("span");
       spinner.className = "spinner-md";
       row.appendChild(spinner);
-    } else if (r && (r.status === "pass" || r.status === "fail")) {
+    } else if (r && (r.status === "pass" || r.status === "fail" || r.status === "skip" || r.status === "cancelled")) {
       const icon = document.createElement("span");
       icon.className = `result-icon ${r.status}`;
-      icon.textContent = r.status === "pass" ? "✓" : "✕";
+      icon.textContent = r.status === "pass" ? "✓" : r.status === "fail" ? "✕" : r.status === "cancelled" ? "■" : "⊘";
       row.appendChild(icon);
     } else {
       const dot = document.createElement("span");
@@ -340,6 +698,13 @@
       // "is it stuck?" into "it's polling a cache".
       subEl.textContent = `${done}/${sc.steps.length} · ${running[0]}`;
       subEl.classList.add("result-sub-running");
+    } else if (r && r.status === "skip") {
+      // test.skip()'d entirely (see helpers/env.js) - no step events ever
+      // fired for it, so `done` stays 0. Distinct text from "not run yet" so
+      // it's clear this scenario WAS attempted and intentionally didn't run.
+      subEl.textContent = "Skipped - credentials not configured";
+    } else if (r && r.status === "cancelled") {
+      subEl.textContent = "Stopped before finishing";
     } else if (done > 0) {
       subEl.textContent = `${done}/${sc.steps.length} steps · ${sc.category}`;
     } else {
@@ -381,19 +746,27 @@
     }
     let pass = 0;
     let fail = 0;
+    let skip = 0;
+    let stopped = 0;
     let pending = 0;
     for (const sc of selectedScenarios) {
       const r = state.results[sc.name];
       if (r && r.status === "pass") pass++;
       else if (r && r.status === "fail") fail++;
+      else if (r && r.status === "skip") skip++;
+      else if (r && r.status === "cancelled") stopped++;
       else pending++;
     }
     badgesEl.classList.remove("hidden");
     clearBtn.classList.remove("hidden");
     passCountEl.textContent = String(pass);
     failCountEl.textContent = String(fail);
+    skipCountEl.textContent = String(skip);
+    stoppedCountEl.textContent = String(stopped);
     pendingCountEl.textContent = String(pending);
     badgeFailEl.classList.toggle("hidden", fail === 0);
+    badgeSkipEl.classList.toggle("hidden", skip === 0);
+    badgeStoppedEl.classList.toggle("hidden", stopped === 0);
     badgePendingEl.classList.toggle("hidden", pending === 0);
   }
 
@@ -443,6 +816,47 @@
       p.className = "detail-pass-message";
       p.style.color = "var(--text-mutedmore)";
       p.textContent = "Test is running…";
+      detailBodyEl.appendChild(p);
+      return;
+    }
+
+    // test.skip()'d - never actually executed, so it's neither a pass nor a
+    // fail (see helpers/env.js / jest/browserReporter.js). Shown distinctly
+    // rather than falling into the fail branch below, which would otherwise
+    // render an empty "Error" section since Jest reports no failureMessages
+    // for a skipped test.
+    if (r.status === "skip") {
+      detailStatusBadgeEl.textContent = "Skipped";
+      detailStatusBadgeEl.className = "status-badge skip";
+      detailStatusBadgeEl.style.background = "";
+      detailStatusBadgeEl.style.color = "";
+      detailDurationEl.textContent = typeof r.duration === "number" ? `${r.duration}ms` : "";
+      const p = document.createElement("p");
+      p.className = "detail-pass-message";
+      p.style.color = "var(--text-mutedmore)";
+      p.textContent =
+        "Skipped - required credentials for this connector aren't set in .env (or are still placeholder " +
+        "values). Check the terminal / server console output for exactly which variables are missing.";
+      detailBodyEl.appendChild(p);
+      return;
+    }
+
+    // Killed mid-run via the Stop button (server.js's /api/cancel-run) - not
+    // a pass, not a fail, and unlike "skip" it may have left real Peaka
+    // resources behind, since Jest's afterAll() cleanup never got to run.
+    // That's exactly what server.js's "cancelled" SSE event's message says,
+    // shown here rather than re-worded, so this stays the ONE place that
+    // wording is defined.
+    if (r.status === "cancelled") {
+      detailStatusBadgeEl.textContent = "Stopped";
+      detailStatusBadgeEl.className = "status-badge cancelled";
+      detailStatusBadgeEl.style.background = "";
+      detailStatusBadgeEl.style.color = "";
+      detailDurationEl.textContent = "";
+      const p = document.createElement("p");
+      p.className = "detail-pass-message";
+      p.style.color = "var(--fail-fg)";
+      p.textContent = r.message || "Stopped before finishing.";
       detailBodyEl.appendChild(p);
       return;
     }
@@ -538,6 +952,8 @@
     runSelectedBtn.disabled = isRunning || !configOk || selectedCount === 0;
     runSelectedLabel.textContent = isRunning ? "Running…" : `Run Selected (${selectedCount})`;
     runSpinner.classList.toggle("hidden", !isRunning);
+    stopRunBtn.classList.toggle("hidden", !isRunning);
+    stopRunBtn.disabled = false; // re-enabled on every render, incl. right after a click - see stopRunBtn's own listener
   }
 
   function runTests(namesFilter) {
@@ -568,6 +984,9 @@
     if (namesFilter) {
       url += `&names=${encodeURIComponent(namesFilter.join(","))}`;
     }
+    if (selectedProject && selectedConnector) {
+      url += `&projectId=${encodeURIComponent(selectedProject.id)}&connectionId=${encodeURIComponent(selectedConnector.connectionId)}`;
+    }
 
     const source = new EventSource(url);
 
@@ -596,7 +1015,7 @@
 
       if (event.type === "result") {
         state.results[event.name] = {
-          status: event.status === "PASS" ? "pass" : "fail",
+          status: event.status === "PASS" ? "pass" : event.status === "SKIP" ? "skip" : "fail",
           duration: event.duration,
           failureMessages: event.failureMessages,
         };
@@ -604,6 +1023,22 @@
         renderCenterList();
         if (state.activeResultName === event.name) renderRightPanel();
       } else if (event.type === "done") {
+        finishRun();
+        source.close();
+      } else if (event.type === "cancelled") {
+        // Whatever was still "running" when Stop was clicked never got a
+        // real result - mark it distinctly (not pass/fail/skip) rather than
+        // leaving it stuck on a spinner forever. See server.js's
+        // /api/cancel-run: killing the process means afterAll() cleanup
+        // never ran, so event.message carries that warning verbatim.
+        for (const name of Object.keys(state.results)) {
+          if (state.results[name].status === "running") {
+            state.results[name] = { status: "cancelled", message: event.message };
+          }
+        }
+        renderFolderScenarioList(state.folder.id);
+        renderCenterList();
+        renderRightPanel();
         finishRun();
         source.close();
       } else if (event.type === "fatal") {
@@ -645,6 +1080,20 @@
     runTests(Array.from(state.selected));
   });
 
+  stopRunBtn.addEventListener("click", async () => {
+    if (!isRunning) return;
+    // Disabled immediately so a second click while the request is in flight
+    // can't double-fire - re-enabled by updateButtonStates() on the next
+    // render regardless (e.g. if this request fails).
+    stopRunBtn.disabled = true;
+    try {
+      await fetch("/api/cancel-run", { method: "POST" });
+    } catch (_) {
+      // The "cancelled" SSE event (or source.onerror) still resolves the UI
+      // even if this particular request failed to send.
+    }
+  });
+
   clearBtn.addEventListener("click", () => {
     const state = currentState();
     if (!state) return;
@@ -658,7 +1107,6 @@
   });
 
   (async function init() {
-    await loadFolders();
-    await checkConfig();
+    await showHome();
   })();
 })();

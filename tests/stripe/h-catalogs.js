@@ -19,7 +19,7 @@ async function runCatalogs(ctx) {
     const res = await ctx.client.createConnection({
       name,
       type: "stripe",
-      credential: { token: ctx.stripeToken },
+      credential: { token: ctx.token },
     });
     assertStatus(res, 200, "createConnection");
     connectionId = res.body.id;

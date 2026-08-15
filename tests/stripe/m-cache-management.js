@@ -43,7 +43,7 @@ async function runCacheManagement(ctx) {
     const conn = await ctx.client.createConnection({
       name,
       type: "stripe",
-      credential: { token: ctx.stripeToken },
+      credential: { token: ctx.token },
     });
     assertStatus(conn, 200, "createConnection (cache-management catalog)");
     ctx.createdConnectionIds.push(conn.body.id);

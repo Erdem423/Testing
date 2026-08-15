@@ -14,7 +14,12 @@
  *
  * The 20-parallel-query step also covers the instructor's scenario 19.
  */
-const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
+const {
+  buildFreshCtx,
+  requireCredentials,
+  runTag,
+  credentialCheck: check,
+} = require("../../helpers/buildCtx")("stripe");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
 const { assertSafeToRaceOrThrow } = require("../../helpers/racePreflight");
@@ -22,15 +27,22 @@ const { runTier3Races } = require("../../tests/races/tier3");
 
 let ctx = null;
 
+// SKIP, not FAIL, when credentials are missing/placeholder - see helpers/env.js.
+const maybeTest = check.ok ? test : test.skip;
+if (!check.ok) console.warn(`Skipping RACE-T3 - credentials not configured:\n${check.errors.join("\n")}`);
+
 // Fail fast if another run looks active - see helpers/racePreflight.js. These
 // tests manufacture races, so overlapping them with anything else produces
 // failures that look like regressions but are not. That has happened twice.
+// Guarded by check.ok so an unconfigured connector doesn't throw here before
+// the skip even has a chance to take effect.
 beforeAll(async () => {
+  if (!check.ok) return;
   requireCredentials();
   await assertSafeToRaceOrThrow(buildFreshCtx().client, (line) => console.log(line));
 }, 30000);
 
-test(
+maybeTest(
   "RACE-T3: Metadata races and parallel load",
   async () => {
     requireCredentials();

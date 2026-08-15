@@ -34,7 +34,7 @@ async function runMetadata(ctx) {
     const connRes = await ctx.client.createConnection({
       name,
       type: "stripe",
-      credential: { token: ctx.stripeToken },
+      credential: { token: ctx.token },
     });
     assertStatus(connRes, 200, "createConnection");
     connectionId = connRes.body.id;

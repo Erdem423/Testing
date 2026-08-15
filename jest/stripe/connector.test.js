@@ -49,47 +49,12 @@
  * CLEANUP: runs automatically in afterAll unless SKIP_CLEANUP=true is set.
  */
 
-const { loadDotEnv, checkCredentials } = require("../../helpers/env");
-const { PeakaClient } = require("../../helpers/peakaClient");
 const { cleanup } = require("../../helpers/cleanup");
 const { withScenario } = require("../../helpers/stepReporter");
 const { runCatalogSchemaDiscovery } = require("../../tests/stripe/b-catalog-schema");
 const { runDataAndCache } = require("../../tests/stripe/c-data-and-cache");
 const { runErrorHandling } = require("../../tests/stripe/f-error-handling");
-
-loadDotEnv();
-
-const check = checkCredentials();
-
-function buildFreshCtx() {
-  const {
-    PEAKA_API_KEY: apiKey,
-    PEAKA_PROJECT_ID: projectId,
-    STRIPE_TEST_TOKEN: stripeToken,
-    PEAKA_CATALOG_ID: catalogId,
-    PEAKA_SCHEMA_NAME: schemaName,
-  } = check.values;
-
-  return {
-    client: new PeakaClient({ apiKey, projectId }),
-    stripeToken,
-    catalogId,
-    catalogNameFromConfig: process.env.PEAKA_CATALOG_NAME || null,
-    schemaName,
-    expectedCustomerCount: parseInt(process.env.NUM_CUSTOMERS || "500", 10),
-    // Deliberately a SEPARATE env var from NUM_CUSTOMERS, not another parse
-    // of the same one - this is what C's live (uncached) count checks assert
-    // against, as a passing regression test for the confirmed ~100-row
-    // COUNT(*) cap (see tests/stripe/c-data-and-cache.js), rather than the
-    // real customer count. Measured on all four tables, not just customers.
-    expectedCustomerCountNonCache: parseInt(process.env.EXPECTED_CUSTOMER_COUNT_NON_CACHE || "100", 10),
-    createdConnectionIds: [],
-    createdCatalogIds: [],
-    createdCacheIds: [],
-    createdQueryIds: [],
-    createdInternalTableNames: [],
-  };
-}
+const { buildFreshCtx, requireCredentials, credentialCheck: check } = require("../../helpers/buildCtx")("stripe");
 
 // One ctx per category, populated by that category's own test. Kept
 // module-scoped (not shared between tests) purely so afterAll can clean up
@@ -98,19 +63,22 @@ let ctxB = null;
 let ctxC = null;
 let ctxF = null;
 
-function requireCredentials() {
-  if (!check.ok) {
-    throw new Error(`Credentials not configured:\n${check.errors.join("\n")}`);
-  }
+// SKIP, not FAIL, when credentials are missing/placeholder - gating test
+// registration itself (rather than throwing inside the test body, which
+// Jest reports as a failure) is what makes `npm test` report "skipped" for
+// an unconfigured connector instead of red. See helpers/env.js.
+const maybeConcurrent = check.ok ? test.concurrent : test.concurrent.skip;
+if (!check.ok) {
+  console.warn(`Skipping Stripe B/C/F - credentials not configured:\n${check.errors.join("\n")}`);
 }
 
-test.concurrent("B: Catalog & Schema Discovery", async () => {
+maybeConcurrent("B: Catalog & Schema Discovery", async () => {
   requireCredentials();
   ctxB = buildFreshCtx();
   await withScenario("B: Catalog & Schema Discovery", () => runCatalogSchemaDiscovery(ctxB));
 });
 
-test.concurrent(
+maybeConcurrent(
   "C: Data Correctness & Cache Behavior",
   async () => {
     requireCredentials();
@@ -124,7 +92,7 @@ test.concurrent(
   300000
 );
 
-test.concurrent("F: Error Handling & Edge Cases", async () => {
+maybeConcurrent("F: Error Handling & Edge Cases", async () => {
   requireCredentials();
   ctxF = buildFreshCtx();
   await withScenario("F: Error Handling & Edge Cases", () => runErrorHandling(ctxF));

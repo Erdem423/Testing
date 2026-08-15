@@ -27,7 +27,7 @@ async function runConnections(ctx) {
     const res = await ctx.client.createConnection({
       name,
       type: "stripe",
-      credential: { token: ctx.stripeToken },
+      credential: { token: ctx.token },
     });
     assertStatus(res, 200, "createConnection");
     assert(res.body && res.body.id, "Expected a connection id in the response");
@@ -95,7 +95,7 @@ async function runConnections(ctx) {
     assertStatus(res, 200, "getConnection (masking check)");
     const serialized = JSON.stringify(res.body);
     assert(
-      !serialized.includes(ctx.stripeToken),
+      !serialized.includes(ctx.token),
       "getConnection response contains the raw Stripe token - credentials must never be echoed back"
     );
     for (const marker of ["sk_test_", "sk_live_", "rk_test_", "rk_live_"]) {
@@ -111,7 +111,7 @@ async function runConnections(ctx) {
     const res = await ctx.client.updateConnection(connectionId, {
       name: updatedName,
       type: "stripe",
-      credential: { token: ctx.stripeToken },
+      credential: { token: ctx.token },
     });
     assertStatus(res, 200, "updateConnection");
 

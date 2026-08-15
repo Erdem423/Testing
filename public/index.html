@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Peaka Test</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -11,9 +12,8 @@
 </head>
 <body>
 
-  <div class="app">
-
-    <!-- Top bar -->
+  <!-- ============ Home view: connect with a Partner API key, then pick a project ============ -->
+  <div id="view-home" class="view">
     <header class="topbar">
       <div class="brand">
         <div class="brand-mark"><span></span></div>
@@ -23,66 +23,172 @@
         </div>
       </div>
       <div class="topbar-actions">
-        <button id="run-all-btn" class="btn btn-secondary">Run All</button>
-        <button id="run-selected-btn" class="btn btn-primary" disabled>
-          <span id="run-spinner" class="spinner hidden"></span>
-          <span id="run-selected-label">Run Selected (0)</span>
-        </button>
+        <button id="home-switch-account-btn" class="btn btn-secondary hidden">Sign out</button>
       </div>
     </header>
+    <div class="picker-body">
+      <div class="picker-heading">
+        <h1>Connect to Peaka</h1>
+        <p>Enter a Partner API key to see its projects and run their connector test suites.</p>
+      </div>
 
-    <div id="config-warning" class="config-warning hidden" role="alert">
-      <strong>Credentials not configured.</strong> Edit <code>.env</code> in this project folder, then reload this page.
-      <ul id="config-errors"></ul>
+      <div id="home-loading" class="picker-loading">Checking connection…</div>
+
+      <!-- Step 1: API key -->
+      <form id="connect-form" class="connect-card hidden">
+        <label class="connect-label" for="api-key-input">Partner API key</label>
+        <div class="connect-input-row">
+          <input id="api-key-input" class="connect-input" type="password" autocomplete="off" placeholder="P1gkcqgj...." />
+          <button id="toggle-key-visibility" type="button" class="btn btn-secondary" aria-label="Show key">👁</button>
+        </div>
+        <button id="connect-btn" type="submit" class="btn btn-primary connect-submit">Connect</button>
+        <p id="connect-error" class="picker-error hidden"></p>
+        <p class="connect-hint">Kept in memory for this session only, never written to disk.</p>
+      </form>
+
+      <!-- Step 2 (only for a key scoped to a single project): its Project ID -->
+      <form id="project-id-form" class="connect-card hidden">
+        <p class="connect-scoped-note">This key is scoped to a single project — enter its Project ID to continue.</p>
+        <label class="connect-label" for="project-id-input">Project ID</label>
+        <div class="connect-input-row">
+          <input id="project-id-input" class="connect-input" type="text" autocomplete="off" placeholder="54fnfKrM" />
+        </div>
+        <button id="connect-project-btn" type="submit" class="btn btn-primary connect-submit">Continue</button>
+        <p id="connect-project-error" class="picker-error hidden"></p>
+      </form>
+
+      <!-- Step 3: connected - project grid -->
+      <div id="home-connected" class="hidden">
+        <div class="connected-bar">
+          <span id="connected-label" class="connected-label"></span>
+          <button id="disconnect-btn" class="link-btn">Sign out</button>
+        </div>
+        <div id="project-grid" class="card-grid hidden"></div>
+        <div id="home-empty" class="picker-empty hidden">No projects found for this API key.</div>
+      </div>
     </div>
+  </div>
 
-    <div class="main-panes">
+  <!-- ============ Project view: connectors actually connected in this project ============ -->
+  <div id="view-project" class="view hidden">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark"><span></span></div>
+        <div class="brand-text">
+          <span class="brand-name">Peaka Test</span>
+          <span class="brand-workspace">Connector test suites</span>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <button id="project-switch-account-btn" class="btn btn-secondary">Sign out</button>
+      </div>
+    </header>
+    <div class="picker-body">
+      <button id="project-back-btn" class="btn btn-secondary back-btn">← Back</button>
+      <nav class="breadcrumb">
+        <button id="breadcrumb-home" class="breadcrumb-link">Projects</button>
+        <span class="breadcrumb-sep">/</span>
+        <span id="breadcrumb-project" class="breadcrumb-current"></span>
+      </nav>
+      <div class="picker-heading">
+        <h1 id="project-title"></h1>
+        <p>Select a connector to run its test suite against this project.</p>
+      </div>
+      <div id="project-loading" class="picker-loading">Loading connectors…</div>
+      <div id="project-error" class="picker-error hidden"></div>
+      <div id="connector-grid" class="card-grid hidden"></div>
+      <div id="project-empty" class="picker-empty hidden">No connections found in this project.</div>
+    </div>
+  </div>
 
-      <!-- Left: folder tree (each discovered connector folder is a collapsible section) -->
-      <aside class="pane pane-left">
-        <div id="folder-tree" class="folder-tree"></div>
-      </aside>
+  <!-- ============ Runner view: the existing scenario runner, scoped to one connector ============ -->
+  <div id="view-runner" class="view hidden">
+    <div class="app">
 
-      <!-- Center: test results -->
-      <section class="pane pane-center">
-        <div class="center-header">
-          <div class="center-header-left">
-            <span class="center-title">Test Results</span>
-            <div id="badges" class="badges hidden">
-              <span class="badge badge-pass"><span id="pass-count">0</span> passed</span>
-              <span id="badge-fail" class="badge badge-fail hidden"><span id="fail-count">0</span> failed</span>
-              <span id="badge-pending" class="badge badge-pending hidden"><span id="pending-count">0</span> pending</span>
+      <!-- Top bar -->
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark"><span></span></div>
+          <div class="brand-text">
+            <span class="brand-name">Peaka Test</span>
+            <span class="brand-workspace">Connector test suites</span>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button id="runner-switch-account-btn" class="btn btn-secondary">Sign out</button>
+          <button id="stop-run-btn" class="btn btn-danger hidden">Stop</button>
+          <button id="run-all-btn" class="btn btn-secondary">Run All</button>
+          <button id="run-selected-btn" class="btn btn-primary" disabled>
+            <span id="run-spinner" class="spinner hidden"></span>
+            <span id="run-selected-label">Run Selected (0)</span>
+          </button>
+        </div>
+      </header>
+
+      <nav class="breadcrumb breadcrumb-runner">
+        <button id="runner-back-btn" class="btn btn-secondary back-btn">← Back</button>
+        <button id="breadcrumb-runner-home" class="breadcrumb-link">Projects</button>
+        <span class="breadcrumb-sep">/</span>
+        <button id="breadcrumb-runner-project" class="breadcrumb-link"></button>
+        <span class="breadcrumb-sep">/</span>
+        <span id="breadcrumb-runner-connector" class="breadcrumb-current"></span>
+      </nav>
+
+      <div id="config-warning" class="config-warning hidden" role="alert">
+        <strong>Credentials not configured.</strong> Edit <code>.env</code> in this project folder, then reload this page.
+        <ul id="config-errors"></ul>
+      </div>
+
+      <div class="main-panes">
+
+        <!-- Left: folder tree (the selected connector's scenarios) -->
+        <aside class="pane pane-left">
+          <div id="folder-tree" class="folder-tree"></div>
+        </aside>
+
+        <!-- Center: test results -->
+        <section class="pane pane-center">
+          <div class="center-header">
+            <div class="center-header-left">
+              <span class="center-title">Test Results</span>
+              <div id="badges" class="badges hidden">
+                <span class="badge badge-pass"><span id="pass-count">0</span> passed</span>
+                <span id="badge-fail" class="badge badge-fail hidden"><span id="fail-count">0</span> failed</span>
+                <span id="badge-skip" class="badge badge-skip hidden"><span id="skip-count">0</span> skipped</span>
+                <span id="badge-stopped" class="badge badge-stopped hidden"><span id="stopped-count">0</span> stopped</span>
+                <span id="badge-pending" class="badge badge-pending hidden"><span id="pending-count">0</span> pending</span>
+              </div>
+            </div>
+            <button id="clear-btn" class="link-btn hidden">Clear results</button>
+          </div>
+          <div class="center-body">
+            <div id="results-list" class="results-list hidden"></div>
+            <div id="empty-no-selection" class="empty-state">
+              <span class="empty-title">No scenarios selected</span>
+              <span class="empty-sub">Check scenarios on the left, then click Run Selected to execute them.</span>
             </div>
           </div>
-          <button id="clear-btn" class="link-btn hidden">Clear results</button>
-        </div>
-        <div class="center-body">
-          <div id="results-list" class="results-list hidden"></div>
-          <div id="empty-no-selection" class="empty-state">
-            <span class="empty-title">No scenarios selected</span>
-            <span class="empty-sub">Check scenarios on the left, then click Run Selected to execute them.</span>
-          </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- Right: detail panel -->
-      <aside class="pane pane-right">
-        <div id="detail-empty" class="empty-state detail-empty">
-          <span class="empty-title">No scenario selected</span>
-          <span class="empty-sub">Run a scenario and click it to inspect the result.</span>
-        </div>
-        <div id="detail-content" class="detail-content hidden">
-          <div class="detail-header">
-            <span id="detail-name" class="detail-name"></span>
-            <div class="detail-meta">
-              <span id="detail-status-badge" class="status-badge"></span>
-              <span id="detail-duration" class="detail-duration"></span>
+        <!-- Right: detail panel -->
+        <aside class="pane pane-right">
+          <div id="detail-empty" class="empty-state detail-empty">
+            <span class="empty-title">No scenario selected</span>
+            <span class="empty-sub">Run a scenario and click it to inspect the result.</span>
+          </div>
+          <div id="detail-content" class="detail-content hidden">
+            <div class="detail-header">
+              <span id="detail-name" class="detail-name"></span>
+              <div class="detail-meta">
+                <span id="detail-status-badge" class="status-badge"></span>
+                <span id="detail-duration" class="detail-duration"></span>
+              </div>
             </div>
+            <div id="detail-body" class="detail-body"></div>
           </div>
-          <div id="detail-body" class="detail-body"></div>
-        </div>
-      </aside>
+        </aside>
 
+      </div>
     </div>
   </div>
 

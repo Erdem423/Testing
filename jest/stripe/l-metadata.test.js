@@ -10,14 +10,23 @@
  * one worker the way test.concurrent() works. Each file builds its own ctx
  * (helpers/buildCtx.js) and cleans up after itself, so nothing is shared.
  */
-const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
+const {
+  buildFreshCtx,
+  requireCredentials,
+  runTag,
+  credentialCheck: check,
+} = require("../../helpers/buildCtx")("stripe");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
 const { runMetadata } = require("../../tests/stripe/l-metadata");
 
 let ctx = null;
 
-test(
+// SKIP, not FAIL, when credentials are missing/placeholder - see helpers/env.js.
+const maybeTest = check.ok ? test : test.skip;
+if (!check.ok) console.warn(`Skipping L: Metadata Refresh Endpoints - credentials not configured:\n${check.errors.join("\n")}`);
+
+maybeTest(
   "L: Metadata Refresh Endpoints",
   async () => {
     requireCredentials();
