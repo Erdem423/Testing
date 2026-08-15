@@ -38,6 +38,9 @@ const PLACEHOLDER_VALUES = new Set([
   "your_peaka_schema_name",
   "your_postgres_catalog_id",
   "your_postgres_connection_id",
+  "your_hubspot_access_token",
+  "your_hubspot_private_app_token",
+  "your_existing_hubspot_catalog_id",
 ]);
 
 /**

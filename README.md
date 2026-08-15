@@ -1,8 +1,8 @@
 # Peaka Partner API Test Suite
 
 An end-to-end Jest suite that validates the [Peaka Partner API](https://docs.peaka.com/api-reference/introduction)
-against three things: a live Stripe connector, a live Postgres (Supabase) connector, and Peaka's own
-built-in Peaka Table / BI Table feature.
+against five things: a live Stripe connector, a live HubSpot connector, a live Postgres (Supabase)
+connector, a live MongoDB connector, and Peaka's own built-in Peaka Table / BI Table feature.
 
 Peaka is a data-integration platform: you connect a source, it exposes the source's tables through a SQL
 interface, and — for API connectors — it can *cache* those tables locally for faster reads. This suite
@@ -10,9 +10,27 @@ checks that the whole chain works, and running the same questions against more t
 turns an observation ("Peaka does X") into an attribution ("Peaka's *Stripe connector* does X, but not its
 Postgres connector") — see [What it found](#what-it-found) below.
 
-**There are no mocks.** Every test talks to a live Peaka project. That is the point: the failures worth
-finding are in the real API's behaviour, not in a stub of it. It also means runs take real time, need
-credentials, and create and delete real resources.
+**There are no mocks.** Every test talks to a live Peaka project and live sandbox accounts (Stripe test
+mode, a HubSpot test account, ...). That is the point: the failures worth finding are in the real API's
+behaviour, not in a stub of it. It also means runs take real time, need credentials, and create and
+delete real resources.
+
+**HubSpot's tests are newer and less battle-tested than Stripe's or Postgres's.** HubSpot connections in
+Peaka are **OAuth2** (confirmed via `getConnectionConfig("hubspot")` - credential fields
+`accessToken`/`refreshToken`/`clientId`/`clientSecret`/`redirectUrl`), unlike Stripe's simple `sk_test_...`
+secret key, so `HUBSPOT_ACCESS_TOKEN` (see below) is a different kind of credential to obtain - likely a
+HubSpot **Private App token**, though that hasn't been confirmed accepted by Peaka yet. Most HubSpot
+scenarios (`B`/`C`/`F`/`I`/`J`/`K`) only ever read the pre-existing catalog and don't need it at all - only
+`G`/`H`/`L`/`M`/`N` (which provision their own connection) do, so a clone without a HubSpot account still
+runs most of the folder. See `tests/hubspot/config.js` and `tests/hubspot/checkTokenCredentials.js`.
+
+**Tried and rejected: giving `H`/`L`/`M`/`N` a token-free path by attaching their isolated catalog to the
+already-working connection behind the shared `PEAKA_HUBSPOT_CATALOG_ID`**, instead of creating a new
+connection. `createCatalog()` accepts any `connectionId` in principle, so this looked promising - but Peaka
+returned a real `500 Internal Server Error` every time, reproduced consistently across all four scenarios.
+Whatever the exact constraint is, Peaka does not support attaching a second catalog to a connection that
+already has one - confirmed against the live API, not assumed. So `G`, `H`, `L`, `M`, `N` all genuinely need
+their own connection, token and all.
 
 ## What it found
 
@@ -49,10 +67,12 @@ That alone runs the `peaka-tables` folder, which creates and seeds everything it
 | To run | You need |
 |---|---|
 | The Stripe folder | A Peaka Stripe connection + catalog, and a Stripe **test** account with data |
+| The HubSpot folder | A Peaka HubSpot connection + catalog (scoped to the `crm` schema); `HUBSPOT_ACCESS_TOKEN` unlocks the rest (`G`/`H`/`L`/`M`/`N`) |
 | The Postgres folder | A Peaka Postgres connection + catalog with at least one table of >100 rows |
+| The MongoDB folder | A Peaka MongoDB connection + catalog with at least one collection of >100 rows |
 
 **No numbers to configure.** Expected values are measured at runtime — the customer count comes
-from Stripe's own API, and the Postgres fixture (which table, how many rows, which column to
+from Stripe's own API, and the Postgres/MongoDB fixture (which table, how many rows, which column to
 filter on) is discovered from the catalog. Nothing needs tuning to match your data.
 
 **Missing data skips rather than fails.** A run measures the environment first, skips the
@@ -88,7 +108,17 @@ PEAKA_MONGO_SCHEMA_NAME=your_mongo_database_name
 PEAKA_MONGO_CONNECTION_ID=your_mongo_connection_id
 
 EXPECTED_CUSTOMER_COUNT_NON_CACHE=100
+
+# HubSpot folder (omit to skip those scenarios; OAuth2, see the table below)
+HUBSPOT_ACCESS_TOKEN=your_hubspot_access_token
+PEAKA_HUBSPOT_CATALOG_ID=your_existing_hubspot_catalog_id
+PEAKA_HUBSPOT_CATALOG_NAME=hubspot
+PEAKA_HUBSPOT_SCHEMA_NAME=crm
 ```
+
+Each connector's credentials are independent - set only Stripe's, only HubSpot's, or both. A connector
+with missing/placeholder credentials has its scenarios reported as **skipped** (not failed) by both
+`npm test` and the dashboard; the other connector runs normally.
 
 | Variable | Where it comes from |
 |---|---|
@@ -98,6 +128,10 @@ EXPECTED_CUSTOMER_COUNT_NON_CACHE=100
 | `PEAKA_CATALOG_ID` | An existing Stripe catalog, created alongside its connection in Studio. `B` reads this catalog rather than creating one |
 | `PEAKA_CATALOG_NAME` | The catalog's SQL-queryable name. Used as a fallback if the live lookup fails |
 | `PEAKA_SCHEMA_NAME` | The Stripe connector's schema, e.g. `payment`. `B` cross-checks it against a live `listSchemas` |
+| `HUBSPOT_ACCESS_TOKEN` | A HubSpot **access token**. Confirmed via `getConnectionConfig("hubspot")` that Peaka's HubSpot connections are OAuth2 (fields: `accessToken`/`refreshToken`/`clientId`/`clientSecret`/`redirectUrl`) — a HubSpot **Private App token** is the most likely candidate value here but hasn't yet been confirmed accepted by Peaka. Only needed by `G`/`H`/`L`/`M`/`N` (the scenarios that provision their own connection) - `B`/`C`/`F`/`I`/`J`/`K` never read it |
+| `PEAKA_HUBSPOT_CATALOG_ID` | An existing HubSpot catalog, created alongside its connection in Studio. `B` reads this catalog rather than creating one |
+| `PEAKA_HUBSPOT_CATALOG_NAME` | The HubSpot catalog's SQL-queryable name. Used as a fallback if the live lookup fails |
+| `PEAKA_HUBSPOT_SCHEMA_NAME` | The HubSpot connector's schema holding the core CRM objects, e.g. `crm` (HubSpot also exposes `conversations`, `crm_associations`, `scheduler`, `settings` — out of scope for this suite) |
 | `PEAKA_PG_CATALOG_ID` | An existing Postgres catalog. The folder reuses it rather than creating one — no database password is ever stored |
 | `PEAKA_PG_SCHEMA_NAME` | The schema to test, e.g. `public` |
 | `PEAKA_PG_CONNECTION_ID` | The connection behind that catalog. An id, not a secret |
@@ -238,14 +272,90 @@ being cached. It has its own config (`jest.races.config.js`), runs single-thread
 ### The web dashboard
 
 `npm run web` serves a browser UI at **http://localhost:3000** that runs the same Jest suites and streams
-results live. It is not an alternative implementation — `server.js` calls Jest's own programmatic API
-(`runCLI`), so what you see is a real Jest run.
+results live. It is not an alternative implementation — a run is a real `jest` process (`jest/runInChild.js`
+calls Jest's own programmatic API, `runCLI`), forked from `server.js` rather than called in-process, so
+what you see is a real Jest run — and, unlike an in-process call, one the dashboard can actually kill (see
+**Stopping a run** below).
 
-The sidebar lists one card per test folder, discovered by scanning `tests/` for subfolders containing a
-`meta.js`. Select scenarios, click **Run Selected**, and watch each step report itself as it executes.
-Credentials never reach the browser — `server.js` reads `.env` itself and sends only results.
+**It's a real app now, not a single screen — and it no longer needs `.env` at all to get started.** The
+home page is a **Connect** screen: paste a Peaka Partner API key and the dashboard walks Peaka's own API
+to figure out what it can see, live:
+
+1. **Connect** — paste a Partner API key. The dashboard tries to list every project it can see
+   (`GET /organizations` → workspaces → projects). Two real key shapes exist, and the dashboard handles
+   both (confirmed against the live API, not assumed):
+   - An **account-wide key** can list organizations/workspaces/projects directly → you land on a project
+     grid.
+   - A **project-scoped key** gets a `403 Forbidden` on that same call (confirmed: the *identical* key
+     still works fine for that one project's own connections/catalogs/etc — it's scoped, not invalid) →
+     the dashboard asks for that project's ID once, then continues.
+   The key is kept in memory for the server process only — never written to `.env`, never sent anywhere
+   but Peaka. **"Use a different key"** clears the session and returns to this screen.
+2. **Project** — that project's actual connectors, listed from its **catalogs** (`listCatalogs`), not
+   `listConnections` — confirmed the two can disagree (a project can have a fully working Stripe/HubSpot
+   catalog while `listConnections` reports none at all). Only connectors this repo has a `tests/<type>/`
+   folder for are clickable; the rest (MongoDB, Postgres, Pinecone, ...) show disabled ("no test suite
+   yet").
+3. **Runner** — the existing scenario list / results / detail panes, now scoped to the exact project +
+   connection you picked. Select scenarios, click **Run Selected**, watch each step report itself live.
+
+Picking a project+connection resolves its catalog and schema live and overwrites the connector's env vars
+for that run only — `.env`'s `PEAKA_API_KEY`/`PEAKA_PROJECT_ID`/`PEAKA_CATALOG_ID`/`PEAKA_SCHEMA_NAME`
+(and the HubSpot equivalents) become **optional**: if present, they just pre-fill the Connect screen's
+session on server start (convenient for solo/local use), but nothing requires them anymore for the
+dashboard specifically — `npm test` (the CLI path) is the one thing still reading them directly. Third-
+party credentials (`STRIPE_TEST_TOKEN`, `HUBSPOT_ACCESS_TOKEN`) still come from `.env` regardless of which
+project is picked — Peaka never returns a connection's real credential (it's masked), so there's no way to
+fetch these dynamically; they're only actually needed by the scenarios that create a **new** Peaka
+connection (`G`/`H`/`L`/`M`/`N` and the races) rather than read a pre-existing catalog. See
+`helpers/peakaAccount.js` for the discovery/resolution logic and `server.js`'s `session`/`classifyApiKey`
+for the connect flow.
+
+Credentials never reach the browser via `.env` — but note the Connect screen is a deliberate exception:
+you type the Partner API key into it yourself, so it does live in the browser tab for that session (same
+tradeoff any "paste your API key" tool makes). It is never persisted to disk — nothing is written to
+`.env`, no `console.log` of it exists anywhere in the code, and the browser side never puts it in
+`localStorage`/`sessionStorage`/a cookie either. **"Sign out"** (reachable from every screen's top bar,
+not just the home page) clears it from the server's memory immediately; restarting the server does the
+same. See `server.js`'s `session` object and `classifyApiKey()`.
+
+### Stopping a run
+
+A run can be genuinely stopped mid-flight — click **Stop** (appears next to **Run All** while a run is in
+progress). This works because each run is a real, separate OS process (`jest/runInChild.js`, forked by
+`server.js`), not Jest called in-process — `server.js` can `child.kill()` it, which an in-process `runCLI()`
+call has no equivalent for. The stopped scenario shows a distinct **"Stopped"** state (not pass/fail/skip).
+
+**Killing the process means Jest's `afterAll()` cleanup never runs.** Any real Peaka resources (connections,
+catalogs, caches) the stopped scenario had already created before you clicked Stop are **not** automatically
+deleted — the dashboard says so plainly when this happens. Check Peaka Studio if you stop a scenario that
+creates its own connection/catalog (`G`/`H`/`L`/`M`/`N`, the races).
+
+### A note on the dashboard's security posture
+
+The dashboard now holds a live Partner API key in memory for as long as the server runs, which is worth
+being deliberate about, not just trusting "it's localhost":
+
+- **Binds to `127.0.0.1` only**, not all network interfaces — Node's default (no host given) listens on
+  every interface, which would let anyone else on the same Wi-Fi/LAN reach your running dashboard and
+  whatever session is connected. Confirmed this was the actual default before it was pinned down explicitly.
+- **Rejects cross-origin requests** to every `/api/*` route (a same-origin check on the `Origin`/`Referer`
+  header) — without this, any other website you happened to have open in another tab could silently POST to
+  `localhost:3000/api/...` and use your active session (trigger a real run, change the connected project,
+  etc.), since browsers don't block a cross-origin request from being *sent*, only from having its response
+  *read*. See `server.js`'s `requireSameOrigin`.
+- Sends `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, and
+  `Referrer-Policy: no-referrer` on every response.
+- This is still a **local, single-user tool** — the in-memory session is one shared global, not
+  per-browser-tab/cookie. Two people should not point their browsers at the same running server at once;
+  each person runs their own `npm run web` and connects with their own key.
 
 ## What each scenario covers
+
+Table below is written from the Stripe suite; HubSpot's `tests/hubspot/*.js` mirror the same scenario
+letters and step shapes against `contacts`/`companies`/`deals` in the `crm` schema — see each HubSpot file's
+header comment for where it deliberately asserts less than its Stripe counterpart (no assumed live-query
+cap, no assumed table-statistics limitation, etc.) pending real measurement.
 
 | Scenario | Covers |
 |---|---|
@@ -338,12 +448,15 @@ as literally written.
 
 ```
 helpers/
-  peakaClient.js            - thin wrapper over the Peaka Partner API
+  peakaClient.js            - thin wrapper over the Peaka Partner API (project-scoped)
+  peakaAccount.js           - account-level discovery for the Connect screen (organizations ->
+                              workspaces -> projects) + resolveDynamicConnectorConfig() (live
+                              catalog/schema resolution for a picked project+connection)
   assert.js                 - assertion helpers, 5xx-aware (see serverError.js)
   serverError.js            - records 5xx responses so they can't pass silently
   step.js                   - runs a named sub-step, tagging errors with which step failed
   stepReporter.js           - emits live step events to the dashboard (no-op under npm test)
-  buildCtx.js               - builds each scenario's isolated context
+  buildCtx.js                - builds each scenario's isolated context
   env.js                    - .env loader + credential validation
   preflight.js              - measures the environment once; test.skip gating
   sweepConnections.js       - age-guarded cleanup of connections a killed run abandoned
@@ -359,7 +472,10 @@ tests/
   stripe/                   - one folder per connector, auto-discovered by server.js
     meta.js                 - scenario metadata for the dashboard
     b-catalog-schema.js … n-materialized-queries.js
-  postgres/                 - the second connector; fixture.js discovers its data at runtime
+  hubspot/                  - same shape as stripe/, see "Adding another connector" below
+    meta.js, config.js, checkTokenCredentials.js
+    b-catalog-schema.js … n-materialized-queries.js
+  postgres/                 - a second connector; fixture.js discovers its data at runtime
     meta.js
     pg-a-discovery.js … pg-i-metadata.js
   peaka-tables/              - no connection/catalog needed; lives in the built-in `peaka` catalog
@@ -370,19 +486,27 @@ tests/
   races/
     meta.js
     tier1.js … tier4.js
+  hubspot-races/            - HubSpot version of races/
+    meta.js
+    tier1.js, tier2.js, tier3.js
 jest/
   stripe/
     connector.test.js       - B, C and F as test.concurrent() blocks
     g-connections.test.js … n-materialized-queries.test.js
+  hubspot/                  - same shape as jest/stripe/
   postgres/                 - pg-a-discovery.test.js … pg-i-metadata.test.js
   peaka-tables/             - one *.test.js per scenario
   races/                    - tier1-4.test.js
+  hubspot-races/            - tier1-3.test.js
   reporters/
     incompleteRun.js        - skip banner + server-error banner, coverage.json, exit code
-  browserReporter.js        - custom reporter, streams results to the dashboard
+  runInChild.js             - thin runCLI() wrapper, forked as its own OS process by server.js so
+                              a run can be killed (the Stop button) - see "Stopping a run" above
+  browserReporter.js        - custom reporter; POSTs results to the dashboard over HTTP (it now
+                              runs inside the forked child, not server.js's own process)
   reporterBus.js
-public/                     - dashboard frontend
-server.js                   - dashboard backend (Express + Jest runCLI)
+public/                     - dashboard frontend (index.html, app.js, styles.css, favicon.svg)
+server.js                   - dashboard backend (Express; forks jest/runInChild.js per run)
 jest.config.js              - main suite config
 jest.races.config.js        - concurrency suite config
 jest.globalSetup.js         - runs preflight once before any test file loads
@@ -460,6 +584,11 @@ Required repository secrets (**Settings → Secrets and variables → Actions**)
 the `PEAKA_MONGO_*` trio for the MongoDB folder, and optionally `SLACK_WEBHOOK_URL`. No `.env` is needed —
 `helpers/env.js` prefers real environment variables.
 
+**The HubSpot secrets (`HUBSPOT_ACCESS_TOKEN`, `PEAKA_HUBSPOT_CATALOG_ID`, `PEAKA_HUBSPOT_SCHEMA_NAME`)
+are not yet added to `nightly-test.yml`.** Until they are, the HubSpot scenarios that need a token
+(`G`/`H`/`L`/`M`/`N`) report as skipped in that run's output — add them the same way as the Stripe
+secrets above once a dedicated CI HubSpot test account exists.
+
 Note the CI job will **fail on an incomplete run**, which is the intended behaviour: a nightly that
 silently stopped covering half the suite is worse than one that goes red. Set `ALLOW_INCOMPLETE=true`
 only if you deliberately run CI against a partially-configured project.
@@ -475,16 +604,43 @@ separate visible step — so "failed once, passed on retry" is reported as flaky
 
 ## Adding another connector
 
-Create `tests/<connector>/` with your scenario files and a `meta.js` (copy `tests/stripe/meta.js`), and
-`jest/<connector>/` with the matching test files. `server.js` discovers folders under `tests/` at request
-time by looking for a `meta.js`, so the new folder appears in the dashboard with no changes to the server
-or frontend.
+Proven four times now — Stripe was the original suite; HubSpot, Postgres and MongoDB were each added
+later following this process, and each is what actually tested the "zero core changes" claim:
+
+1. Create `tests/<connector>/config.js` (copy `tests/postgres/config.js` or `tests/hubspot/config.js` as
+   a template) declaring `requiredEnv` (the env vars `helpers/env.js`'s `checkCredentials()` demands on top
+   of the core `PEAKA_API_KEY`/`PEAKA_PROJECT_ID`), `catalogIdEnv`/`schemaEnv`/`catalogNameEnv`, and
+   whether the connector `supportsCaching`. This is the one genuinely shared piece of infrastructure a new
+   connector touches - and unlike the old `CONNECTOR_SPECS` object this replaced, it needs no edit to
+   `helpers/env.js` itself, just a new file.
+2. Create `tests/<connector>/` with your scenario files and a `meta.js` (copy `tests/hubspot/meta.js`),
+   and `jest/<connector>/` with the matching test files (copy `jest/hubspot/connector.test.js` and the
+   single-scenario `.test.js` files - each one calls `buildFreshCtx("<connector>")` and
+   `requireCredentials("<connector>")` from `require("../../helpers/buildCtx")` to get a ctx scoped to
+   that connector's credentials).
+3. Optionally add `tests/<connector>-races/` + `jest/<connector>-races/` for deliberate concurrency tests,
+   and widen `jest.races.config.js`'s `testMatch` to include the new folder.
+
+`server.js` discovers folders under `tests/` at request time by looking for a `meta.js`, so the new folder
+appears in the dashboard with no changes to the server or frontend - steps 2-3 alone are enough for that
+part. A `tests/<name>/` folder with **no** `meta.js` stays correctly invisible in the dashboard (no broken
+"0 scenarios" card) - useful if you start a connector's credential research (real shape confirmed against
+Peaka's `listConnectionConfig()`) before writing its scenarios.
+
+**Dashboard connector matching is keyed off `catalogType`, not `connectionType`.** `server.js`'s
+`/api/peaka/projects/:projectId/connectors` lists connectors from a project's *catalogs*
+(`listCatalogs()`), not `listConnections()` - confirmed the two can disagree (a project can have a
+working catalog for a connector `listConnections` doesn't report at all). Name the `tests/<name>/` folder
+to match the real `catalogType` string a live catalog of that connector reports (verify with
+`listCatalogs()` against a real connection before naming the folder - Postgres's is uppercase
+(`POSTGRES`), most others aren't, don't assume).
 
 ## Related documents
 
 | Document | Contents |
 |---|---|
 | [FINDINGS.md](FINDINGS.md) | Peaka API bugs found, with evidence and reproduction steps |
-| [STRIPE_TEST_SCENARIOS.md](STRIPE_TEST_SCENARIOS.md) | Step-by-step breakdown of every scenario |
+| [STRIPE_TEST_SCENARIOS.md](STRIPE_TEST_SCENARIOS.md) | Step-by-step breakdown of every Stripe scenario |
+| [HUBSPOT_TEST_SCENARIOS.md](HUBSPOT_TEST_SCENARIOS.md) | Step-by-step breakdown of every HubSpot scenario, plus how it differs from Stripe's |
 | [CONCURRENCY-SPEC.md](CONCURRENCY-SPEC.md) | Design and results of the concurrency suite |
 | [COVERAGE.md](COVERAGE.md) | Coverage against the original requirements |

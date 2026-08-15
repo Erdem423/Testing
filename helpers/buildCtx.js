@@ -71,6 +71,14 @@ function buildFreshCtx(connectorId = "stripe") {
     stripe: config.usesStripeClient ? new StripeClient({ token: stripeToken }) : null,
     projectId,
     stripeToken,
+    // Generic credential slot Stripe's own scenario files read directly
+    // (tests/stripe/g-connections.js etc. use `credential: { token: ctx.token }`).
+    // Stripe's own STRIPE_TEST_TOKEN wins when present; otherwise falls back
+    // to whatever tokenEnv the connector declares (e.g. HubSpot's
+    // HUBSPOT_ACCESS_TOKEN, see tests/hubspot/config.js) - null for
+    // connectors that need neither (Postgres/Mongo reuse an existing
+    // connection instead of authenticating one themselves here).
+    token: stripeToken || (config.tokenEnv ? process.env[config.tokenEnv] || null : null),
     catalogId,
     // Reused rather than created - see tests/postgres/config.js for why.
     connectionId: config.connectionIdEnv ? process.env[config.connectionIdEnv] || null : null,

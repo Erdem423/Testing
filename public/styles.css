@@ -1,15 +1,22 @@
 :root {
-  /* Colors - matched exactly to API Test Runner.dc.html's inline oklch() values */
-  --bg: oklch(97.5% 0.003 250);
+  /* Colors - light theme, richer/more saturated accent than the original
+     flat palette (see FEEDBACK: "daha modern kullanıcı dostu" - a modern
+     SaaS-dashboard feel: soft elevation, a purposeful indigo accent, rounder
+     corners - not a new color system, an elevated execution of the same one. */
+  --bg: oklch(96.5% 0.006 260);
+  --bg-alt: oklch(98% 0.004 255);
   --text: oklch(22% 0.01 260);
   --white: #ffffff;
-  --border: oklch(91% 0.004 260);
-  --border-soft: oklch(93% 0.004 260);
-  --border-softer: oklch(95% 0.003 260);
-  --border-input: oklch(88% 0.004 260);
+  --border: oklch(90% 0.006 260);
+  --border-soft: oklch(92.5% 0.005 260);
+  --border-softer: oklch(95% 0.004 260);
+  --border-input: oklch(87% 0.006 260);
 
-  --accent: oklch(45% 0.16 255);
-  --accent-disabled: oklch(80% 0.01 260);
+  --accent: oklch(53% 0.19 264);
+  --accent-hover: oklch(47% 0.19 264);
+  --accent-soft: oklch(94% 0.035 264);
+  --accent-soft-border: oklch(85% 0.06 264);
+  --accent-disabled: oklch(82% 0.02 264);
   --running: oklch(60% 0.14 250);
   --running-dark: oklch(50% 0.14 250);
   --pass: oklch(58% 0.14 145);
@@ -57,10 +64,22 @@
   --text-heading: oklch(25% 0.01 260);
   --text-emptytitle: oklch(35% 0.01 260);
 
-  --hover-bg: oklch(97% 0.003 250);
-  --active-bg: oklch(97% 0.02 250);
+  --hover-bg: oklch(96% 0.006 260);
+  --active-bg: oklch(94.5% 0.025 264);
   --dot-idle: oklch(85% 0.004 260);
   --search-bg: oklch(98% 0.002 250);
+
+  /* Layered, cool-tinted shadows (not pure black) - reads as soft elevation
+     rather than a harsh drop shadow, consistent at every size. */
+  --shadow-xs: 0 1px 2px oklch(30% 0.02 260 / 0.06);
+  --shadow-sm: 0 1px 3px oklch(30% 0.02 260 / 0.08), 0 1px 2px oklch(30% 0.02 260 / 0.05);
+  --shadow-md: 0 4px 14px oklch(30% 0.03 260 / 0.08), 0 1px 3px oklch(30% 0.02 260 / 0.06);
+  --shadow-lg: 0 12px 32px oklch(30% 0.04 260 / 0.12), 0 2px 8px oklch(30% 0.02 260 / 0.06);
+  --shadow-accent: 0 4px 14px oklch(53% 0.19 264 / 0.28);
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
 
   --font-ui: "Inter", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -70,6 +89,8 @@
 html, body { margin: 0; padding: 0; }
 body {
   font-family: var(--font-ui);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
 }
 
 @keyframes spin {
@@ -78,6 +99,16 @@ body {
 }
 
 .hidden { display: none !important; }
+
+/* A calm two-tone radial wash behind the picker screens (home/project) only
+   - .app (the runner) stays a flat working surface, this is deliberately
+   just for the "landing" feel of the picker screens. */
+.view:not(#view-runner) {
+  background:
+    radial-gradient(1100px 520px at 12% -8%, oklch(53% 0.19 264 / 0.06), transparent 60%),
+    radial-gradient(900px 460px at 100% 0%, oklch(58% 0.14 145 / 0.04), transparent 55%),
+    var(--bg);
+}
 
 /* ---------- Folder tree (in the left sidebar, VS Code style) ---------- */
 
@@ -147,11 +178,14 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 56px;
-  min-height: 56px;
-  padding: 0 20px;
+  height: 60px;
+  min-height: 60px;
+  padding: 0 24px;
   background: var(--white);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-xs);
+  position: relative;
+  z-index: 2;
 }
 
 .brand {
@@ -161,28 +195,29 @@ body {
 }
 
 .brand-mark {
-  width: 28px;
-  height: 28px;
-  border-radius: 7px;
-  background: var(--accent);
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(155deg, oklch(58% 0.2 264), var(--accent) 65%);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  box-shadow: var(--shadow-accent);
 }
 .brand-mark span {
   width: 10px;
   height: 10px;
-  border-radius: 2px;
+  border-radius: 3px;
   background: var(--white);
 }
 
 .brand-text {
   display: flex;
   flex-direction: column;
-  line-height: 1.1;
+  line-height: 1.15;
 }
-.brand-name { font-size: 14px; font-weight: 600; color: var(--text); }
+.brand-name { font-size: 14.5px; font-weight: 700; color: var(--text-heading); letter-spacing: -0.01em; }
 .brand-workspace { font-size: 11px; color: var(--text-dim); }
 
 .topbar-actions {
@@ -192,14 +227,16 @@ body {
 }
 
 .btn {
-  height: 32px;
-  border-radius: 6px;
+  height: 34px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   font-family: inherit;
   cursor: pointer;
   border: none;
+  transition: background-color 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease, transform 0.06s ease;
 }
 .btn:disabled { cursor: default; }
+.btn:active:not(:disabled) { transform: translateY(1px); }
 
 .btn-secondary {
   padding: 0 14px;
@@ -207,7 +244,9 @@ body {
   background: var(--white);
   font-weight: 500;
   color: var(--text-medium);
+  box-shadow: var(--shadow-xs);
 }
+.btn-secondary:hover:not(:disabled) { background: var(--hover-bg); border-color: var(--accent-soft-border); color: var(--text-strong); }
 
 .btn-primary {
   padding: 0 16px;
@@ -217,8 +256,19 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  box-shadow: var(--shadow-accent);
 }
-.btn-primary:disabled { background: var(--accent-disabled); }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn-primary:disabled { background: var(--accent-disabled); box-shadow: none; }
+
+.btn-danger {
+  padding: 0 14px;
+  border: 1px solid var(--fail-border);
+  background: var(--fail-bg);
+  font-weight: 600;
+  color: var(--fail-fg);
+}
+.btn-danger:hover:not(:disabled) { background: var(--fail-fg); border-color: var(--fail-fg); color: var(--white); }
 
 .spinner {
   width: 12px;
@@ -265,7 +315,7 @@ body {
   width: 280px;
   min-width: 280px;
   background: var(--white);
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--border-soft);
 }
 
 .left-controls {
@@ -278,15 +328,17 @@ body {
 
 .search-input {
   width: 100%;
-  height: 32px;
-  padding: 0 10px;
-  border-radius: 6px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border-input);
   font-size: 13px;
   font-family: inherit;
   outline: none;
+  background: var(--search-bg);
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
 }
-.search-input:focus { border-color: var(--running); }
+.search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); background: var(--white); }
 
 .select-all-label {
   display: flex;
@@ -310,11 +362,13 @@ body {
   padding: 10px 14px;
   cursor: pointer;
   border-bottom: 1px solid var(--border-softer);
+  border-left: 2px solid transparent;
   background: transparent;
+  transition: background-color 0.12s ease, border-left-color 0.12s ease;
 }
 .scenario-row:hover { background: var(--hover-bg); }
-.scenario-row.active { background: var(--active-bg); }
-.scenario-row input[type="checkbox"] { margin-top: 2px; }
+.scenario-row.active { background: var(--active-bg); border-left-color: var(--accent); }
+.scenario-row input[type="checkbox"] { margin-top: 2px; accent-color: var(--accent); }
 
 .scenario-info {
   display: flex;
@@ -341,6 +395,7 @@ body {
    to the unstyled base. Fixed here alongside the new warn state. */
 .status-dot.skipped { background: var(--skip); }
 .status-dot.warn { background: var(--warn); }
+.status-dot.cancelled { background: var(--fail-fg); opacity: 0.55; }
 
 /* ---------- Center pane ---------- */
 
@@ -348,7 +403,7 @@ body {
 
 .center-header {
   padding: 16px 22px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-soft);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -361,12 +416,15 @@ body {
 .badges { display: flex; align-items: center; gap: 8px; }
 .badge {
   font-size: 12px;
-  padding: 3px 9px;
-  border-radius: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
   font-weight: 600;
+  letter-spacing: 0.01em;
 }
 .badge-pass { background: var(--pass-bg); color: var(--pass-fg); }
 .badge-fail { background: var(--fail-bg); color: var(--fail-fg); }
+.badge-skip { background: var(--pending-bg); color: var(--text-muted); }
+.badge-stopped { background: var(--fail-bg); color: var(--fail-fg); }
 .badge-pending { background: var(--pending-bg); color: var(--pending-fg); }
 .badge-warn { background: var(--warn-bg); color: var(--warn-fg); }
 .badge-skipped { background: var(--skip-bg); color: var(--skip-fg); }
@@ -394,11 +452,14 @@ body {
   gap: 12px;
   padding: 12px 14px;
   background: var(--white);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
   cursor: pointer;
+  box-shadow: var(--shadow-xs);
+  transition: box-shadow 0.14s ease, border-color 0.14s ease, transform 0.1s ease;
 }
-.result-row.active { background: var(--active-bg); border-color: var(--running); }
+.result-row:hover { box-shadow: var(--shadow-sm); transform: translateY(-1px); }
+.result-row.active { background: var(--active-bg); border-color: var(--accent-soft-border); box-shadow: var(--shadow-sm); }
 .result-row.fail-border { border-color: var(--fail-border); }
 .result-row.skip-border { border-color: var(--skip-border); }
 .result-row.warn-border { border-color: var(--warn-border); }
@@ -427,8 +488,9 @@ body {
 }
 .result-icon.pass { background: var(--pass); }
 .result-icon.fail { background: var(--fail); }
-.result-icon.skipped { background: var(--skip); }
-.result-icon.warn { background: var(--warn); }
+.result-icon.skipped { background: var(--skip); font-size: 12px; }
+.result-icon.warn { background: var(--warn); font-size: 12px; }
+.result-icon.cancelled { background: var(--fail-fg); opacity: 0.55; font-size: 12px; }
 
 .result-pending-dot {
   width: 8px;
@@ -506,13 +568,14 @@ body {
   justify-content: center;
   height: 100%;
   gap: 8px;
-  border: 1px dashed var(--border-input);
-  border-radius: 10px;
+  border: 1.5px dashed var(--border-input);
+  border-radius: var(--radius-md);
+  background: var(--bg-alt);
   color: var(--text-mutedmore);
   text-align: center;
   padding: 40px;
 }
-.empty-title { font-size: 14px; font-weight: 500; color: var(--text-emptytitle); }
+.empty-title { font-size: 14px; font-weight: 600; color: var(--text-emptytitle); }
 .empty-sub { font-size: 13px; max-width: 320px; }
 
 /* ---------- Right pane ---------- */
@@ -521,7 +584,7 @@ body {
   width: 420px;
   min-width: 420px;
   background: var(--white);
-  border-left: 1px solid var(--border);
+  border-left: 1px solid var(--border-soft);
 }
 
 .detail-empty {
@@ -540,29 +603,31 @@ body {
 }
 
 .detail-header {
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border-soft);
   flex-shrink: 0;
 }
-.detail-name { font-size: 13px; font-weight: 600; }
+.detail-name { font-size: 13.5px; font-weight: 700; color: var(--text-heading); }
 
 .detail-meta {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 8px;
+  margin-top: 9px;
 }
 
 .status-badge {
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 700;
-  padding: 3px 8px;
-  border-radius: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  letter-spacing: 0.01em;
 }
 .status-badge.pass { background: var(--pass-bg); color: var(--pass-fg); }
 .status-badge.fail { background: var(--fail-bg); color: var(--fail-fg); }
 .status-badge.skipped { background: var(--skip-bg); color: var(--skip-fg); }
 .status-badge.warn { background: var(--warn-bg); color: var(--warn-fg); }
+.status-badge.cancelled { background: var(--fail-bg); color: var(--fail-fg); }
 
 .detail-duration {
   font-size: 12px;
@@ -671,4 +736,253 @@ body {
 }
 @media (max-width: 640px) {
   .pane-left { width: 220px; min-width: 220px; }
+}
+
+/* ---------- Views (home / project / runner) ---------- */
+
+.view {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+}
+#view-runner.view { min-height: 0; } /* .app inside already fills 100vh itself */
+
+.picker-body {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 56px 28px 72px;
+}
+
+.picker-heading { margin-bottom: 32px; }
+.picker-heading h1 {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text-heading);
+  margin: 0 0 8px;
+  letter-spacing: -0.015em;
+}
+.picker-heading p {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.picker-loading,
+.picker-empty {
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 32px 0;
+  text-align: center;
+}
+
+.picker-error {
+  font-size: 13px;
+  color: var(--fail-fg);
+  background: var(--fail-bg);
+  border: 1px solid var(--fail-border);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+/* ---------- Breadcrumb ---------- */
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  padding: 14px 0 0;
+}
+.breadcrumb-runner { padding: 10px 20px 0; }
+.breadcrumb-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.breadcrumb-link:hover { color: var(--accent); }
+.breadcrumb-sep { color: var(--text-dimmer); }
+.breadcrumb-current { color: var(--text-strong); font-weight: 600; }
+
+.back-btn {
+  height: 28px;
+  padding: 0 12px 0 10px;
+  font-size: 12px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+/* On the project page the back button sits on its own line above the
+   breadcrumb; on the runner page it sits inline with it (breadcrumb-runner
+   is already a flex row), so only the project one needs its own spacing. */
+#project-back-btn { margin-bottom: 14px; }
+
+/* ---------- Cards (projects + connectors) ---------- */
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 14px;
+}
+
+.card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px;
+  background: var(--white);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.14s ease, box-shadow 0.14s ease, transform 0.12s ease;
+}
+.card:hover {
+  border-color: var(--accent-soft-border);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+.card:active { transform: translateY(0); }
+
+.card-disabled {
+  cursor: default;
+  opacity: 0.55;
+  box-shadow: var(--shadow-xs);
+}
+.card-disabled:hover {
+  border-color: var(--border-soft);
+  box-shadow: var(--shadow-xs);
+  transform: none;
+}
+
+.card-icon {
+  width: 42px;
+  height: 42px;
+  min-width: 42px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+}
+.card-disabled .card-icon { background: var(--hover-bg); }
+
+.card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-sub {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+/* ---------- Connect card (home view's Partner API key form) ---------- */
+
+.connect-card {
+  max-width: 440px;
+  background: var(--white);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  padding: 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: var(--shadow-lg);
+}
+
+.connect-scoped-note {
+  font-size: 13px;
+  color: var(--text-medium);
+  margin: 0 0 4px;
+}
+
+.connect-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.connect-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.connect-input {
+  flex: 1;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-input);
+  font-size: 13.5px;
+  font-family: var(--font-mono);
+  outline: none;
+  min-width: 0;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.connect-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+.connect-input-row .btn-secondary {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.connect-submit {
+  align-self: flex-start;
+  height: 38px;
+  padding: 0 22px;
+  margin-top: 4px;
+}
+
+.connect-hint {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  margin: 4px 0 0;
+}
+
+/* ---------- Connected bar (home view, above the project grid) ---------- */
+
+.connected-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.connected-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.connected-label::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--pass);
+  margin-right: 7px;
+  box-shadow: 0 0 0 3px var(--pass-bg);
 }
