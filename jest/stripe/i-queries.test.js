@@ -9,24 +9,19 @@
  * one worker the way test.concurrent() works. Each file builds its own ctx
  * (helpers/buildCtx.js) and cleans up after itself, so nothing is shared.
  */
-const {
-  buildFreshCtx,
-  requireCredentials,
-  runTag,
-  credentialCheck: check,
-} = require("../../helpers/buildCtx")("stripe");
+const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
+const { gatedTest } = require("../../helpers/preflight");
 const { runQueries } = require("../../tests/stripe/i-queries");
 
 let ctx = null;
 
-// SKIP, not FAIL, when credentials are missing/placeholder - see helpers/env.js.
-const maybeTest = check.ok ? test : test.skip;
-if (!check.ok) console.warn(`Skipping I: Saved Query Endpoints - credentials not configured:\n${check.errors.join("\n")}`);
-
-maybeTest(
+// GATED: one step runs a saved query and asserts it returns at least one row,
+// which needs the underlying table to actually hold data.
+gatedTest(
   "I: Saved Query Endpoints",
+  "stripe.customers",
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();

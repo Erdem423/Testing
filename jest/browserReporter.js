@@ -33,6 +33,7 @@
  * hook at the individual test-case level - so this reporter can't emit a
  * "running" event for an individual test the way a hand-rolled runner could.
  */
+const { SKIP_MARKER } = require("../helpers/preflight");
 
 /** Fire-and-await POST of one event - swallows every failure on purpose, same as helpers/stepReporter.js: a dashboard that missed an event is cosmetic, a test that failed because the dashboard was unreachable is not. */
 async function post(event) {
@@ -55,23 +56,30 @@ class BrowserStreamReporter {
   }
 
   async onTestCaseResult(test, testCaseResult) {
-    // "skipped"/"pending"/"todo" all mean test.skip() gated this test off
-    // (see helpers/env.js's credential check + the maybeTest/maybeConcurrent
-    // pattern in jest/**/*.test.js) - it never ran, so it must never be
-    // reported as FAIL. Collapsing it into FAIL here would make an
-    // unconfigured connector's scenarios show up red in the dashboard,
-    // exactly the skip-vs-fail confusion this project's CLI output already
-    // takes care to avoid.
-    const status =
-      testCaseResult.status === "passed"
-        ? "PASS"
-        : testCaseResult.status === "skipped" || testCaseResult.status === "pending" || testCaseResult.status === "todo"
-        ? "SKIP"
-        : "FAIL";
+    // THREE outcomes, not two. A skipped test used to fall into the `FAIL`
+    // branch, so a scenario gated off by helpers/preflight.js's gatedTest()
+    // (missing/placeholder credentials, or insufficient seeded data) showed
+    // up in the dashboard as a red failure. It is not a failure - it did not
+    // run - and conflating the two is exactly what makes a partial run hard
+    // to read.
+    const raw = testCaseResult.status;
+    const status = raw === "passed" ? "PASS" : raw === "pending" || raw === "skipped" ? "SKIP" : "FAIL";
+
+    // helpers/preflight.js appends "[SKIPPED: <reason>]" to the test name so
+    // the reason survives across process boundaries (this reporter runs in a
+    // forked child - see the module comment above). Strip it back off here
+    // so the name still matches the scenario declared in meta.js, and send
+    // the reason as its own field.
+    const fullName = testCaseResult.fullName || testCaseResult.title || "";
+    const marker = fullName.indexOf(SKIP_MARKER);
+    const name = marker === -1 ? fullName : fullName.slice(0, marker).trim();
+    const skipReason = marker === -1 ? null : fullName.slice(marker + SKIP_MARKER.length).replace(/\]$/, "");
+
     await post({
       type: "result",
-      name: testCaseResult.fullName || testCaseResult.title,
+      name,
       status,
+      skipReason,
       duration: testCaseResult.duration,
       failureMessages: testCaseResult.failureMessages || [],
     });
@@ -82,6 +90,7 @@ class BrowserStreamReporter {
       type: "done",
       passed: results.numPassedTests,
       failed: results.numFailedTests,
+      skipped: results.numPendingTests,
       total: results.numTotalTests,
     });
   }

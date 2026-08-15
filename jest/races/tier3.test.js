@@ -14,36 +14,32 @@
  *
  * The 20-parallel-query step also covers the instructor's scenario 19.
  */
-const {
-  buildFreshCtx,
-  requireCredentials,
-  runTag,
-  credentialCheck: check,
-} = require("../../helpers/buildCtx")("stripe");
+const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
+const { gateFor } = require("../../helpers/preflight");
 const { assertSafeToRaceOrThrow } = require("../../helpers/racePreflight");
 const { runTier3Races } = require("../../tests/races/tier3");
 
-let ctx = null;
+// GATED like every other Stripe-dependent scenario: these cache `customers`,
+// so without Stripe credentials there is nothing to race against and the
+// tier must SKIP rather than throw. The beforeAll below is guarded too -
+// it performs live API calls that would fail the same way.
+const gate = gateFor("RACE-T3: Metadata races and parallel load", "stripe.customers");
 
-// SKIP, not FAIL, when credentials are missing/placeholder - see helpers/env.js.
-const maybeTest = check.ok ? test : test.skip;
-if (!check.ok) console.warn(`Skipping RACE-T3 - credentials not configured:\n${check.errors.join("\n")}`);
+let ctx = null;
 
 // Fail fast if another run looks active - see helpers/racePreflight.js. These
 // tests manufacture races, so overlapping them with anything else produces
 // failures that look like regressions but are not. That has happened twice.
-// Guarded by check.ok so an unconfigured connector doesn't throw here before
-// the skip even has a chance to take effect.
 beforeAll(async () => {
-  if (!check.ok) return;
+  if (!gate.ok) return; // scenario is skipped - nothing to guard
   requireCredentials();
   await assertSafeToRaceOrThrow(buildFreshCtx().client, (line) => console.log(line));
 }, 30000);
 
-maybeTest(
-  "RACE-T3: Metadata races and parallel load",
+(gate.ok ? test : test.skip)(
+  gate.name,
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();

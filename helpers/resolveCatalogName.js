@@ -33,7 +33,7 @@ async function resolveCatalogName(ctx) {
 
   assertStatus(res, 200, "getCatalog");
   assert(res.body && res.body.name, "Expected catalog response to include a queryable name");
-  assertEqual(res.body.catalogType, ctx.connectorType || "stripe", "catalogType");
+  assertEqual(res.body.catalogType, ctx.connectorId || "stripe", "catalogType");
   // `name` is the generated queryable slug (used in SQL), distinct from `displayName`.
   ctx.catalogName = res.body.name;
 }

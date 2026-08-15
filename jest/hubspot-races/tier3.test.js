@@ -4,12 +4,9 @@
  * HubSpot version of jest/races/tier3.test.js. See CONCURRENCY-SPEC.md and
  * tests/hubspot-races/tier3.js's header comment.
  */
-const {
-  buildFreshCtx,
-  requireCredentials,
-  runTag,
-  credentialCheck: check,
-} = require("../../helpers/buildCtx")("hubspot");
+const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
+const { checkWithToken } = require("../../tests/hubspot/checkTokenCredentials");
+const check = checkWithToken();
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
 const { assertSafeToRaceOrThrow } = require("../../helpers/racePreflight");
@@ -23,15 +20,15 @@ if (!check.ok) console.warn(`Skipping HubSpot RACE-T3 - credentials not configur
 
 beforeAll(async () => {
   if (!check.ok) return;
-  requireCredentials();
-  await assertSafeToRaceOrThrow(buildFreshCtx().client, (line) => console.log(line));
+  requireCredentials("hubspot");
+  await assertSafeToRaceOrThrow(buildFreshCtx("hubspot").client, (line) => console.log(line));
 }, 30000);
 
 maybeTest(
   "RACE-T3: Metadata races and parallel load",
   async () => {
-    requireCredentials();
-    ctx = buildFreshCtx();
+    requireCredentials("hubspot");
+    ctx = buildFreshCtx("hubspot");
     ctx.runTag = runTag();
     await withScenario("RACE-T3: Metadata races and parallel load", () => runTier3Races(ctx));
   },

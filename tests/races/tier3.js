@@ -1,5 +1,6 @@
 const { assertStatus, assert } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
+const { assertNoServerError, recordServerError } = require("../../helpers/serverError");
 const { resolveCatalogName } = require("../../helpers/resolveCatalogName");
 const { duringSync, duringState, simultaneously, waitForSettled, sleep } = require("../../helpers/raceWindow");
 
@@ -17,9 +18,14 @@ const META_TERMINAL = ["NOT_ACTIVE", "COMPLETED", "FAILED", "STUCK"];
  * Tier 3 concurrency conflicts - metadata races and parallel load.
  *
  * NON-DESTRUCTIVE, unlike Tier 2: nothing here deletes a catalog or
- * connection. Metadata refreshes run against a THROWAWAY catalog so they
- * cannot disturb B and C reading the shared one, and the parallel-query step
- * is read-only.
+ * connection it did not create. EVERY step that writes - the metadata
+ * refreshes and the cache sync in 3.8b - runs against its own throwaway
+ * catalog, so none of them can disturb B and C reading the shared one. The
+ * parallel-query step is read-only and deliberately uses the shared catalog.
+ *
+ * That was not always true: 3.8b cached `customers` into PEAKA_CATALOG_ID
+ * until 2026-08-03, which made this paragraph a claim the code did not honour.
+ * If you add a step here that writes, give it a throwaway catalog too.
  *
  * The 20-parallel-query step also covers the instructor's scenario 19.
  */
@@ -107,8 +113,15 @@ async function runTier3Races(ctx) {
     // return an EMPTY table list - a transient empty result is exactly the
     // shape of bug that would silently break anything doing discovery.
     for (const o of observations) {
-      assert(o.tablesStatus < 500, `listTables returned ${o.tablesStatus} during a metadata refresh`);
-      assert(o.colsStatus < 500, `listColumns returned ${o.colsStatus} during a metadata refresh`);
+      // These observations store bare status NUMBERS rather than response
+      // objects, so they are wrapped - assertNoServerError only ever reads
+      // .status and .body.
+      assertNoServerError({ status: o.tablesStatus }, "listTables during a metadata refresh", {
+        message: `listTables returned ${o.tablesStatus} during a metadata refresh`,
+      });
+      assertNoServerError({ status: o.colsStatus }, "listColumns during a metadata refresh", {
+        message: `listColumns returned ${o.colsStatus} during a metadata refresh`,
+      });
       if (o.tablesStatus === 200) {
         assert(
           o.tableCount > 0,
@@ -138,8 +151,27 @@ async function runTier3Races(ctx) {
   // prediction rather than assume it, since the *row-query* equivalent of this
   // is a confirmed bug.
   await step("listTables while a table is being cached (predicted safe)", async () => {
+    // USES A THROWAWAY CATALOG, like every other step in this file.
+    //
+    // It used to cache `customers` into the shared PEAKA_CATALOG_ID, which is
+    // exactly the hazard Tier 1 was moved off: an interruption between the
+    // create and the delete below leaves `customers` cached in the catalog C
+    // depends on. That is not hypothetical - a dashboard server died mid-run
+    // once and left precisely that state behind, after which C skipped its
+    // whole live phase, silently dropping the 100-row cap regression.
+    //
+    // It also made this file's own header untrue, which claimed Tier 3 could
+    // not disturb B and C. An independent catalog on its own Stripe connection
+    // holds the same `customers` rows and syncs in the same ~37s, so the race
+    // window is unchanged.
+    const raceCatalogId = await throwawayCatalog("cache-sync");
+    assert(
+      String(raceCatalogId) !== String(ctx.catalogId),
+      "This step must never cache into the shared PEAKA_CATALOG_ID"
+    );
+
     const cache = await ctx.client.createCache({
-      catalogId: ctx.catalogId,
+      catalogId: raceCatalogId,
       schemaName: ctx.schemaName,
       tableName: "customers",
     });
@@ -148,8 +180,8 @@ async function runTier3Races(ctx) {
     ctx.createdCacheIds.push(cacheId);
 
     const outcome = await duringSync(ctx, cacheId, async () => {
-      const tables = await ctx.client.listTables(ctx.catalogId, ctx.schemaName);
-      const cols = await ctx.client.listColumns(ctx.catalogId, ctx.schemaName, "customers");
+      const tables = await ctx.client.listTables(raceCatalogId, ctx.schemaName);
+      const cols = await ctx.client.listColumns(raceCatalogId, ctx.schemaName, "customers");
       return { tables, cols };
     });
 
@@ -188,7 +220,9 @@ async function runTier3Races(ctx) {
         continue;
       }
       console.log(`  ${label} -> ${o.value.status}`);
-      assert(o.value.status < 500, `${label} returned ${o.value.status} when raced - a server error`);
+      assertNoServerError(o.value, label, {
+        message: `${label} returned ${o.value.status} when raced - a server error`,
+      });
     }
 
     // The invariant: overlapping refreshes must not wedge the catalog, and
@@ -231,6 +265,20 @@ async function runTier3Races(ctx) {
     // succeeds or fails with a meaningful 4xx (429 included). No 5xx, and
     // nothing hangs.
     const serverErrors = Object.keys(byStatus).filter((s) => Number(s) >= 500);
+    // Recorded before asserting, and one record per DISTINCT status rather than
+    // per response - this aggregates a histogram across N parallel queries, so
+    // there is no single response object to hand to assertNoServerError. The
+    // assert below still fails the step; this only makes the 5xx reach the run
+    // banner and coverage.json as well.
+    for (const status of serverErrors) {
+      recordServerError({
+        status: Number(status),
+        label: "parallel query load",
+        body: null,
+        tolerated: false,
+        context: `${byStatus[status]} of ${PARALLEL_QUERY_COUNT} parallel queries returned ${status}`,
+      });
+    }
     assert(
       serverErrors.length === 0,
       `Parallel load produced server errors: ${serverErrors.map((s) => `${byStatus[s]}x${s}`).join(", ")}. ` +

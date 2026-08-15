@@ -22,8 +22,12 @@ module.exports = {
   testTimeout: 1200000,
   maxWorkers: 1,
   verbose: true,
+  // Same preflight as the main config - the races cache `customers`, so they
+  // need the same "is there actually data here" gate.
+  globalSetup: "<rootDir>/jest.globalSetup.js",
   reporters: [
     "default",
     ["jest-junit", { outputDirectory: "./test-results", outputName: "junit-races.xml" }],
+    "<rootDir>/jest/reporters/incompleteRun.js",
   ],
 };

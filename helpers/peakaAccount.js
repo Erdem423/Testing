@@ -104,8 +104,8 @@ const DEFAULT_SCHEMA_BY_CONNECTOR = {
 
 /**
  * Resolves a picked project + connection down to the catalogId/schemaName
- * the existing test scenarios need (see helpers/buildCtx.js /
- * helpers/env.js's CONNECTOR_SPECS) - the dashboard's replacement for
+ * the existing test scenarios need (see helpers/buildCtx.js and each
+ * connector's tests/<id>/config.js) - the dashboard's replacement for
  * manually setting PEAKA_CATALOG_ID/PEAKA_SCHEMA_NAME in .env per connector.
  *
  * Never invents a catalog - if the selected connection has no catalog set up

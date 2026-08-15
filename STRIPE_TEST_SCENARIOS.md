@@ -48,7 +48,7 @@ The ordering is load-bearing: **all uncached assertions must run before anything
 |---|---|---|
 | Cached counts bypass the cap | Same `COUNT(*)` queries again | None returns exactly 100; all non-zero. Failing here would mean the cap reaches cached reads too — a broader bug, deliberately not tolerated |
 | Cached SELECT exceeds 100 | `SELECT id FROM charges LIMIT 500`, now cached | Returns >100 (measured: 500), duplicate-free. The only context in which a >100-row result is obtainable at all |
-| Cached customer count | vs `NUM_CUSTOMERS` | ≈ real count (505) |
+| Cached customer count | vs Stripe's own API count | matches the source exactly |
 | Cached charge refund distribution | Refunded vs total, full table | ~15% |
 | Cached subscription distribution | active/canceled | active+canceled ≤ total |
 | Cached invoice count | vs subscriptions | ≥ 1 invoice per subscription. (Replaces an old "~25% of customers" check that only ever passed because the cap clamped both sides — real ratio is 67%) |

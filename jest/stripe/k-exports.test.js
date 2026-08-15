@@ -9,24 +9,20 @@
  * one worker the way test.concurrent() works. Each file builds its own ctx
  * (helpers/buildCtx.js) and cleans up after itself, so nothing is shared.
  */
-const {
-  buildFreshCtx,
-  requireCredentials,
-  runTag,
-  credentialCheck: check,
-} = require("../../helpers/buildCtx")("stripe");
+const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
+const { gatedTest } = require("../../helpers/preflight");
 const { runExports } = require("../../tests/stripe/k-exports");
 
 let ctx = null;
 
-// SKIP, not FAIL, when credentials are missing/placeholder - see helpers/env.js.
-const maybeTest = check.ok ? test : test.skip;
-if (!check.ok) console.warn(`Skipping K: Export Endpoints - credentials not configured:\n${check.errors.join("\n")}`);
-
-maybeTest(
+// GATED: the table-export step asserts an exact row count on `charges`, and an
+// export of an empty table fails outright ("Trino-native export produced no
+// files") rather than producing an empty file - see peakaClient.createTableExport.
+gatedTest(
   "K: Export Endpoints",
+  "stripe.charges",
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();

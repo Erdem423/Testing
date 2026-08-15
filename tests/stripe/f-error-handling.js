@@ -18,6 +18,43 @@ async function runErrorHandling(ctx) {
     assertStatusIn(res, [400, 404, 422], "query non-existent table");
   });
 
+  // THE OTHER TWO IDENTIFIER POSITIONS. A query names catalog, schema, table
+  // and columns; only a bad TABLE was covered, so a connector that resolved
+  // any of the rest sloppily would have gone unnoticed.
+  //
+  // Both assert an EXACT 400 rather than a set. Measured directly before these
+  // were written, and pinning them is deliberate: the suite has already had a
+  // hedged status set conceal a real bug for as long as the step existed.
+  //
+  // The message check is the load-bearing half. A 400 alone only says "the
+  // query was rejected" - it does not distinguish a genuine resolution failure
+  // from a parse error, a quota rejection, or a connector timeout that happens
+  // to 400. Requiring the offending identifier to appear by name is what makes
+  // this a test of identifier resolution specifically.
+  await step("a non-existent schema is rejected by name", async () => {
+    const badSchema = "definitely_not_a_schema";
+    const sql = `SELECT * FROM "${ctx.catalogName}"."${badSchema}"."customers" LIMIT 1`;
+    const res = await ctx.client.executeQuery({ statement: sql }, "SIMPLE");
+
+    assertStatus(res, 400, "query with a non-existent schema");
+    assert(
+      res.body && typeof res.body.message === "string" && res.body.message.includes(badSchema),
+      `Expected the error to name the bad schema '${badSchema}', got: ${JSON.stringify(res.body)}`
+    );
+  });
+
+  await step("a non-existent column is rejected by name", async () => {
+    const badColumn = "definitely_not_a_column";
+    const sql = `SELECT ${badColumn} FROM "${ctx.catalogName}"."${ctx.schemaName}"."customers" LIMIT 1`;
+    const res = await ctx.client.executeQuery({ statement: sql }, "SIMPLE");
+
+    assertStatus(res, 400, "query with a non-existent column");
+    assert(
+      res.body && typeof res.body.message === "string" && res.body.message.includes(badColumn),
+      `Expected the error to name the bad column '${badColumn}', got: ${JSON.stringify(res.body)}`
+    );
+  });
+
   await step("pagination via limit/offset returns non-overlapping pages", async () => {
     // Paginates 'refunds', NOT 'charges', deliberately.
     //
@@ -44,10 +81,23 @@ async function runErrorHandling(ctx) {
     assertStatus(page1, 200, "refunds page1");
     assertStatus(page2, 200, "refunds page2");
 
-    if (page1.body.data.length === 0) {
-      console.log("skipped: no refunds to paginate - did you run the seed script?");
-      return;
-    }
+    // NO EMPTY-PAGE SKIP HERE ANY MORE, deliberately.
+    //
+    // This used to `return` when page 1 came back empty, which the reporter
+    // counted as a PASSING step - so a catalog with no refunds reported green
+    // while verifying nothing. Whether the data exists is now decided ONCE, up
+    // front, by the preflight gate on this scenario (see
+    // jest/stripe/connector.test.js), which produces a real test.skip that
+    // Jest counts separately from a pass.
+    //
+    // So reaching this point means the preflight saw enough rows, and an empty
+    // page here is a genuine failure worth surfacing rather than absorbing.
+    assert(
+      page1.body.data.length > 0,
+      "First page of refunds came back empty even though the preflight measured enough rows. " +
+        "That means something changed mid-run (a cache on refunds, or the rows disappearing) - " +
+        "not missing seed data."
+    );
 
     const ids1 = new Set(page1.body.data.map((r) => r.id));
     const ids2 = new Set(page2.body.data.map((r) => r.id));

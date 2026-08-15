@@ -35,10 +35,11 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const { fork } = require("child_process");
-const { loadDotEnv, checkCredentials, CONNECTOR_SPECS, PLACEHOLDER_VALUES } = require("./helpers/env");
+const { loadDotEnv, checkCredentials, loadConnectorConfig, PLACEHOLDER_VALUES } = require("./helpers/env");
 const { PeakaClient } = require("./helpers/peakaClient");
 const { discoverAllProjects, resolveDynamicConnectorConfig } = require("./helpers/peakaAccount");
 const reporterBus = require("./jest/reporterBus");
+const { SIDECAR_DIR: SERVER_ERROR_DIR } = require("./helpers/serverError");
 
 loadDotEnv();
 
@@ -369,19 +370,21 @@ const CREDENTIAL_CONNECTOR_FOR_FOLDER = {
 
 /**
  * Resolves a picked project + connection to catalog/schema config and
- * overwrites the connector's env vars (see CONNECTOR_SPECS in helpers/env.js)
- * for the CURRENT process, the same way process.env.PEAKA_STEP_REPORT_URL is
- * set below before each run - buildCtx.js and checkCredentials() read
- * process.env fresh every time they're called, so this is enough to make the
- * next check/run see the picked project/connection instead of whatever's
- * static in .env. Does nothing (returns null) when projectId/connectionId
- * aren't both supplied, so the old .env-only CLI path (and any request that
- * omits them) is unaffected.
+ * overwrites the connector's env vars (per its tests/<id>/config.js -
+ * catalogIdEnv/schemaEnv/catalogNameEnv, see helpers/env.js's
+ * loadConnectorConfig) for the CURRENT process, the same way
+ * process.env.PEAKA_STEP_REPORT_URL is set below before each run -
+ * buildCtx.js and checkCredentials() read process.env fresh every time
+ * they're called, so this is enough to make the next check/run see the
+ * picked project/connection instead of whatever's static in .env. Does
+ * nothing (returns null) when projectId/connectionId aren't both supplied,
+ * so the old .env-only CLI path (and any request that omits them) is
+ * unaffected.
  */
 async function applyDynamicConnectorConfig(connectorId, projectId, connectionId) {
   if (!projectId || !connectionId) return null;
-  const spec = CONNECTOR_SPECS[connectorId];
-  if (!spec) return null;
+  const config = loadConnectorConfig(connectorId);
+  if (!config) return null;
 
   const apiKey = process.env.PEAKA_API_KEY;
   if (!apiKey || PLACEHOLDER_VALUES.has(apiKey)) {
@@ -390,9 +393,9 @@ async function applyDynamicConnectorConfig(connectorId, projectId, connectionId)
 
   const resolved = await resolveDynamicConnectorConfig({ apiKey, projectId, connectionId, connectorId });
   process.env.PEAKA_PROJECT_ID = projectId;
-  process.env[spec.catalogIdVar] = resolved.catalogId;
-  process.env[spec.catalogNameVar] = resolved.catalogName;
-  process.env[spec.schemaNameVar] = resolved.schemaName;
+  process.env[config.catalogIdEnv] = resolved.catalogId;
+  if (config.catalogNameEnv) process.env[config.catalogNameEnv] = resolved.catalogName;
+  process.env[config.schemaEnv] = resolved.schemaName;
   return resolved;
 }
 
@@ -419,14 +422,16 @@ app.get("/api/config-status", async (req, res) => {
     return res.json({ ok: false, errors: [err.message] });
   }
 
-  // requireToken: false - this is a coarse "is there enough configured to
-  // attempt SOMETHING in this folder" gate for the Run buttons, not a
-  // per-scenario guarantee. Individual scenarios that DO need the token
-  // (G/H/L/M/N, races) still gate themselves correctly via test.skip - see
-  // helpers/env.js. Using the strict (requireToken: true) check here would
-  // disable the Run buttons for a HubSpot folder where B/C/F/I/J/K work fine
-  // without a token, just because G-N don't have one yet.
-  const check = checkCredentials(connectorId, { requireToken: false });
+  // A coarse "is there enough configured to attempt SOMETHING in this
+  // folder" gate for the Run buttons, not a per-scenario guarantee.
+  // checkCredentials() only requires what that connector's tests/<id>/
+  // config.js declares in requiredEnv - for HubSpot that deliberately
+  // excludes HUBSPOT_ACCESS_TOKEN (see tests/hubspot/config.js), so this
+  // naturally behaves like the old requireToken:false check without needing
+  // a special case here. Individual scenarios that DO need the token
+  // (G/H/L/M/N, races) still gate themselves correctly - see
+  // tests/hubspot/checkTokenCredentials.js.
+  const check = checkCredentials(connectorId);
   if (check.ok) {
     res.json({ ok: true });
   } else {
@@ -502,6 +507,17 @@ app.get("/api/run-stream", async (req, res) => {
   runInProgress = true;
   cancelRequested = false;
   const stepReportUrl = `http://127.0.0.1:${PORT}/api/step-event`;
+
+  // Clear per-run server-error records. jest.globalSetup.js does this too,
+  // but the inline config below deliberately does NOT include globalSetup
+  // (same reason upstream's did not: it's a purpose-built dashboard config,
+  // not jest.config.js) - so without this line a dashboard run would leave
+  // records behind that the next `npm test` would report as phantom warnings.
+  try {
+    fs.rmSync(SERVER_ERROR_DIR, { recursive: true, force: true });
+  } catch (_) {
+    // Reporting hygiene only - never worth failing a run over.
+  }
 
   // Forked as its own OS process (not called in-process via runCLI, like the
   // original design) specifically so it can be killed - see /api/cancel-run

@@ -8,12 +8,9 @@
  * Each file builds its own ctx (helpers/buildCtx.js) and cleans up after
  * itself, so nothing is shared.
  */
-const {
-  buildFreshCtx,
-  requireCredentials,
-  runTag,
-  credentialCheck: check,
-} = require("../../helpers/buildCtx")("hubspot");
+const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
+const { checkWithToken } = require("../../tests/hubspot/checkTokenCredentials");
+const check = checkWithToken();
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
 const { runConnections } = require("../../tests/hubspot/g-connections");
@@ -27,8 +24,8 @@ if (!check.ok) console.warn(`Skipping G: Connection Endpoints (HubSpot) - creden
 maybeTest(
   "G: Connection Endpoints",
   async () => {
-    requireCredentials();
-    ctx = buildFreshCtx();
+    requireCredentials("hubspot");
+    ctx = buildFreshCtx("hubspot");
     ctx.runTag = runTag();
     await withScenario("G: Connection Endpoints", () => runConnections(ctx));
   },

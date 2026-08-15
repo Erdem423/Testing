@@ -36,21 +36,34 @@ class PeakaClient {
     this.projectId = projectId || requireEnv("PEAKA_PROJECT_ID");
   }
 
-  async _request(method, path, { body, query } = {}) {
+  // `formData` sends a multipart/form-data body (FormData) instead of JSON -
+  // used only by createTableImport. Content-Type is deliberately OMITTED in
+  // that case: fetch sets its own `multipart/form-data; boundary=...` header,
+  // and hand-setting application/json (what every other call needs) would
+  // silently corrupt the upload.
+  async _request(method, path, { body, query, formData, raw } = {}) {
     let url = `${BASE_URL}${path}`;
     if (query) {
       const qs = new URLSearchParams(query).toString();
       url += `?${qs}`;
     }
 
+    const headers = { Authorization: `Bearer ${this.apiKey}` };
+    if (!formData) headers["Content-Type"] = "application/json";
+
     const res = await fetch(url, {
       method,
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: body ? JSON.stringify(body) : undefined,
+      headers,
+      body: formData || (body ? JSON.stringify(body) : undefined),
     });
+
+    // `raw` is for the handful of endpoints that don't return JSON at all
+    // (e.g. getTableSample's text/csv) - res.json() would throw and silently
+    // discard the real body as null otherwise.
+    if (raw) {
+      const text = await res.text();
+      return { status: res.status, ok: res.ok, body: text };
+    }
 
     let json = null;
     try {
@@ -78,6 +91,14 @@ class PeakaClient {
   // credential-masking check in tests/stripe/g-connections.js verifies.
   getConnection(connectionId) {
     return this._request("GET", `/connections/${this.projectId}/${connectionId}`);
+  }
+
+  // Returns LESS than getConnection, not more, despite the name: measured
+  // 2026-08-04 it gives `{ type }` alone, where getConnection gives
+  // id/name/type/url. Path verified by probe - `/details` and the
+  // project-scoped forms all return the generic framework 404.
+  getConnectionDetail(connectionId) {
+    return this._request("GET", `/connections/${this.projectId}/${connectionId}/detail`);
   }
 
   updateConnection(connectionId, { name, type, credential, connectionCallback }) {
@@ -243,6 +264,11 @@ class PeakaClient {
   }
 
   // ---- Queries ----
+  // SELECT-ONLY. Verified 2026-08-06: INSERT/UPDATE/DELETE/CREATE TABLE AS
+  // SELECT all return 400 "Statement type 'X' is not allowed" - there is no
+  // DML path through this endpoint. The only write path into a Peaka Table
+  // is createTableImport (CSV). Peaka BI Table has no known write path at
+  // all - see the "Peaka internal tables" comment block below.
   executeQuery(payload, format = "SIMPLE") {
     return this._request("POST", `/data/projects/${this.projectId}/queries/execute`, {
       body: payload,
@@ -275,6 +301,39 @@ class PeakaClient {
     return this._request("DELETE", `/data/projects/${this.projectId}/queries/${queryId}`);
   }
 
+  // ---- Query paths and folders ----
+  //
+  // PATCH, NOT the documented PUT. The reference gives
+  // `PUT /api/queries/{queryId}/path`; both parts of that are wrong against the
+  // live API. Verified 2026-08-03 by calling each candidate with a well-formed
+  // but non-existent query id and comparing against a deliberate nonsense
+  // control:
+  //     /api/queries/{id}/path            -> 404, same shape as the control
+  //     .../queries/{id}/path via PUT     -> 405 Method Not Allowed
+  //     .../queries/{id}/path via POST    -> 405 Method Not Allowed
+  //     .../queries/{id}/path via PATCH   -> reached the handler
+  // The 405s are what identified the route as real but the verb as wrong.
+  //
+  // Moving a query to a path that does not exist CREATES a folder, and that
+  // folder OUTLIVES the query - deleting the query leaves it behind. Anything
+  // calling this must track the folder for cleanup; see helpers/cleanup.js.
+  updateQueryPath(queryId, path) {
+    return this._request("PATCH", `/data/projects/${this.projectId}/queries/${queryId}/path`, {
+      body: { path },
+    });
+  }
+
+  // Returns { items: [{ id, name, path, parentId, createdAt, ... }] } - note
+  // the envelope, unlike the bare arrays most list endpoints return.
+  listQueryFolders() {
+    return this._request("GET", `/data/projects/${this.projectId}/queries/folders`);
+  }
+
+  // 204 on success.
+  deleteQueryFolder(folderId) {
+    return this._request("DELETE", `/data/projects/${this.projectId}/queries/folders/${folderId}`);
+  }
+
   // ---- Materialized queries ----
   // A materialized query is created via createQuery with
   // queryType: "MATERIALIZED". inputQueryRefId is OPTIONAL - inputQuery
@@ -302,6 +361,23 @@ class PeakaClient {
     return this._request("POST", `/data/projects/${this.projectId}/queries/${queryId}/exports`, {
       body: { format, limit, columns, compression, includeSystemColumns, csvOptions },
     });
+  }
+
+  // Exports a TABLE directly, rather than a saved query. Path verified against
+  // the live API 2026-08-04 - the reference abbreviates it, and three of the
+  // four candidates returned the generic framework 404.
+  //
+  // Two behaviours worth knowing, both measured:
+  //   - The 100-row cap applies. Exporting the 652-row `charges` table produces
+  //     a file with rowCount 100, with no error and no indication.
+  //   - Exporting an EMPTY table FAILS rather than producing an empty file:
+  //     "Trino-native export produced no files at s3a://export/...".
+  createTableExport(catalogId, schemaName, tableName, { format, limit, columns, compression } = {}) {
+    return this._request(
+      "POST",
+      `/data/projects/${this.projectId}/catalogs/${catalogId}/schemas/${schemaName}/tables/${tableName}/exports`,
+      { body: { format, limit, columns, compression } }
+    );
   }
 
   getExport(exportId) {
@@ -351,6 +427,25 @@ class PeakaClient {
 
   // Takes an ARRAY of columns; dataType is one of
   // VARCHAR/BIGINT/BOOLEAN/DECIMAL/TIMESTAMP/TIME/DATE/UUID.
+  //
+  // NO JSON TYPE, contrary to the source doc's own claim that Peaka Table
+  // (unlike BI Table) supports JSON columns. Verified 2026-08-06:
+  // dataType: "JSON" is rejected here exactly as it is for addBiTableColumns
+  // - 400 "No enum constant com.peaka.gateway.model.ColumnRequest.ColumnType.JSON".
+  // The live server's column-type enum has no JSON member for EITHER table
+  // kind. This blocks PT-03/PT-10 in the source doc as literally specified.
+  //
+  // Every table also carries SYSTEM COLUMNS you never declared. This comment
+  // used to list three; `SELECT *` on a six-column table returns FOURTEEN
+  // (corrected 2026-08-10), so the real set is EIGHT:
+  //   _id (bigint, default abstract_schema_mapper.next_id()), _version,
+  //   _created_time, _created_by, _last_modified_time, _last_modified_by,
+  //   _session, and a bare non-underscored `text` column.
+  // BI Table carries those plus _operation - see addBiTableColumns below.
+  //
+  // Two consequences: a "columns match exactly what I added" assertion must
+  // filter all eight, and `SELECT *` is NOT a safe way to read a row back -
+  // name the columns you want.
   addInternalTableColumns(tableName, columns) {
     return this._request("POST", `/data/projects/${this.projectId}/table/${tableName}/columns`, { body: columns });
   }
@@ -361,6 +456,156 @@ class PeakaClient {
 
   deleteInternalTableColumn(tableName, columnName) {
     return this._request("DELETE", `/data/projects/${this.projectId}/table/${tableName}/columns/${columnName}`);
+  }
+
+  // Multipart upload: `file` is a CSV string, `mappings` is
+  // [{ name, csvColumnName }] (or csvColumnIndex when containsHeader is
+  // false - csvColumnName is then rejected). Table name in the path, as with
+  // create/delete above.
+  //
+  // CONSTRAINTS: the earlier note here said isNotNull/isUnique/defaultValue
+  // are "accepted at column-creation time but not checked" on import. That was
+  // wrong on both counts, corrected 2026-08-11 and now asserted by the
+  // column-constraints scenario:
+  //   - isUnique and isNotNull are never STORED at all. Send true, read the
+  //     column straight back, and both come back false. There is no constraint
+  //     to enforce, so the import behaviour follows trivially: duplicates and
+  //     empty values both land with 200.
+  //   - defaultValue DOES round-trip AND is applied here: import a CSV whose
+  //     mappings omit that column entirely and the rows come back carrying the
+  //     default rather than NULL.
+  createTableImport(tableName, { file, mappings, containsHeader = true }) {
+    const fd = new FormData();
+    fd.append("file", new Blob([file], { type: "text/csv" }), "import.csv");
+    fd.append("request", JSON.stringify({ mappings, containsHeader }));
+    return this._request("POST", `/data/projects/${this.projectId}/table/${tableName}/import`, { formData: fd });
+  }
+
+  // Returns `Content-Type: text/csv`, not JSON - uses `raw: true` so `.body`
+  // is the real response text instead of _request's usual JSON.parse, which
+  // would throw on this and silently come back null (verified: it did,
+  // through this exact method, before `raw` existed).
+  //
+  // NOT WHAT ITS NAME SUGGESTS. Verified 2026-08-10 through this method with
+  // `raw: true`: this returns a CANNED TEMPLATE, unrelated to the real table.
+  //   - A NONEXISTENT table: 200, body is five blank lines ("\n\n\n\n\n").
+  //   - A real table with declared columns (name, age): 200, but the header
+  //     is "text,name,age" - a "text" column that was never declared - and
+  //     every row is "sample text","sample text",<random int>.
+  //   - The SAME table AFTER importing real rows (alice/30, bob/40): still
+  //     the exact same synthetic "sample text"/random-int pattern. Real data
+  //     never appears.
+  // So this does not reflect the table's actual columns or content in any
+  // observed case - it looks like a fixed example generator, keyed on
+  // nothing we varied. PT-13 in the source doc expects real column names as
+  // the header; that expectation does not hold as observed.
+  getTableSample(tableName) {
+    return this._request("GET", `/data/projects/${this.projectId}/table/${tableName}/sample`, { raw: true });
+  }
+
+  // Requires the FULL column body, not a partial patch - verified 2026-08-06.
+  // Sending only { displayName } fails: 400 "Class discriminator was missing
+  // ... polymorphic scope of 'SerColumnType'" (dataType is the discriminator
+  // and is required even though it isn't changing). Send the complete shape:
+  // { name, dataType, displayName, defaultValue, isNotNull, isUnique }.
+  updateInternalTableColumn(tableName, columnName, column) {
+    return this._request("PUT", `/data/projects/${this.projectId}/table/${tableName}/columns/${columnName}`, {
+      body: column,
+    });
+  }
+
+  // ---- Peaka BI Table (bitable) ----
+  // Same shape as Peaka Table above, under /bitable/ instead of /table/, with
+  // real differences measured 2026-08-06:
+  //   - No JSON column type - same as Peaka Table, see addInternalTableColumns.
+  //   - No import/sample routes exist at all (both generic 404 - confirmed
+  //     both ad hoc and again as part of this suite's Phase A probes).
+  //   - No row-level write endpoint of ANY kind was found (also probed
+  //     /rows, /data, /records, /insert, /values - all generic 404). As of
+  //     this writing there is no known way to put data into a BI Table
+  //     through the Partner API.
+  //   - create() silently STRIPS ALL UNDERSCORES from the table name -
+  //     "e2e_test_underscore_probe" is stored as "e2etestunderscoreprobe".
+  //     Peaka Table preserves the name unchanged. Always track/delete the
+  //     NAME THE RESPONSE RETURNS, never the name you sent - see
+  //     helpers/withTable.js.
+  //   - THIS CAUSES REAL COLLISIONS, not just cosmetic renaming: creating
+  //     "e2e_auto_a_b" then "e2e_auto_ab" both return 200 with the identical
+  //     tableName ("eautoab"). The second create does not error as a
+  //     duplicate - it silently succeeds against the same underlying table.
+  //     Two scenario names that differ only by underscore placement are the
+  //     same table.
+  createBiTable(tableName) {
+    return this._request("POST", `/data/projects/${this.projectId}/bitable/${tableName}`);
+  }
+
+  listBiTables() {
+    return this._request("GET", `/data/projects/${this.projectId}/bitable`);
+  }
+
+  deleteBiTable(tableName) {
+    return this._request("DELETE", `/data/projects/${this.projectId}/bitable/${tableName}`);
+  }
+
+  // Same shape as addInternalTableColumns, minus JSON: a JSON dataType is
+  // rejected with 400 "No enum constant
+  // com.peaka.gateway.model.ColumnRequest.ColumnType.JSON" - functionally
+  // correct per the docs, but the message leaks an internal Java class name
+  // to the API consumer.
+  //
+  // TWO SEPARATE BUGS HERE, verified independent 2026-08-06 - don't
+  // conflate them:
+  //
+  // (1) COLUMN NAMES ARE STRIPPED OF UNDERSCORES, exactly like table names:
+  //     "col_a" is stored as "cola". Only fires when the name actually
+  //     contains an underscore - "status" stays "status".
+  //
+  // (2) displayName IS ALWAYS OVERWRITTEN with the column's own name,
+  //     whatever that name ends up being. This fires REGARDLESS of
+  //     underscores: a column named "flag" sent with displayName
+  //     "Flag Label" stores displayName "flag". Bug (1) is not involved -
+  //     it just mangles the name first when one has underscores, which is
+  //     what makes the two look like one bug.
+  //
+  // Both are universal across all 8 supported types (VARCHAR/BIGINT/
+  // BOOLEAN/DECIMAL/TIMESTAMP/DATE/UUID/TIME) - not a VARCHAR quirk.
+  // Peaka Table's addInternalTableColumns respects displayName correctly
+  // for the same column names and values, so this is BI-Table-specific.
+  //
+  // Every BI Table carries the same eight system columns a Peaka Table does
+  // (see addInternalTableColumns above) PLUS _operation - so nine in total:
+  // _id, _version, _created_time, _created_by, _last_modified_time,
+  // _last_modified_by, _session, _operation, and a non-underscored "text"
+  // column that appears to be a default/example column, not something you
+  // declared. Filter these out of any "columns match what I added" check.
+  addBiTableColumns(tableName, columns) {
+    return this._request("POST", `/data/projects/${this.projectId}/bitable/${tableName}/columns`, { body: columns });
+  }
+
+  listBiTableColumns(tableName) {
+    return this._request("GET", `/data/projects/${this.projectId}/bitable/${tableName}/columns`);
+  }
+
+  // Verified working normally - deleted column disappears from the list and
+  // SELECT of it 4xxs with a clear "cannot be resolved" message. Unaffected
+  // by the displayName issue below.
+  deleteBiTableColumn(tableName, columnName) {
+    return this._request("DELETE", `/data/projects/${this.projectId}/bitable/${tableName}/columns/${columnName}`);
+  }
+
+  // Same full-body requirement as updateInternalTableColumn - see its
+  // comment. BUT THE DISPLAYNAME CHANGE DOES NOT PERSIST, verified
+  // 2026-08-06 (checked again after a 3s wait, ruling out propagation lag,
+  // and again across all 8 column types - universal, not type-specific):
+  // this returns 200 with a response body that ECHOES the requested
+  // displayName as if it worked, but a subsequent listBiTableColumns still
+  // shows the old value. The response lies about what happened. Peaka
+  // Table's updateInternalTableColumn genuinely persists - this is
+  // BI-Table-specific.
+  updateBiTableColumn(tableName, columnName, column) {
+    return this._request("PUT", `/data/projects/${this.projectId}/bitable/${tableName}/columns/${columnName}`, {
+      body: column,
+    });
   }
 
   // ---- SQL ----

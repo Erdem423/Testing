@@ -9,12 +9,9 @@
  * Each file builds its own ctx (helpers/buildCtx.js) and cleans up after
  * itself, so nothing is shared.
  */
-const {
-  buildFreshCtx,
-  requireCredentials,
-  runTag,
-  credentialCheck: check,
-} = require("../../helpers/buildCtx")("hubspot");
+const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
+const { checkWithToken } = require("../../tests/hubspot/checkTokenCredentials");
+const check = checkWithToken();
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
 const { runCacheManagement } = require("../../tests/hubspot/m-cache-management");
@@ -28,8 +25,8 @@ if (!check.ok) console.warn(`Skipping M: Cache Management Endpoints (HubSpot) - 
 maybeTest(
   "M: Cache Management Endpoints",
   async () => {
-    requireCredentials();
-    ctx = buildFreshCtx();
+    requireCredentials("hubspot");
+    ctx = buildFreshCtx("hubspot");
     ctx.runTag = runTag();
     await withScenario("M: Cache Management Endpoints", () => runCacheManagement(ctx));
   },

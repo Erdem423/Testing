@@ -179,21 +179,24 @@ async function runCacheManagement(ctx) {
 
   // KNOWN PRODUCT BUG, reproduced 2026-07-29 on two separate occasions: the
   // schema-level variant returns 500 while the project- and catalog-level
-  // ones work. Accepted here with a loud log rather than left permanently
-  // red, matching how the duplicate-cache 200/409 divergence is handled.
-  // If it starts returning 200, this logs and the assertion still passes -
-  // tighten it to [200] at that point.
+  // ones work.
+  //
+  // TOLERATED, NOT ACCEPTED. The step still passes - a permanently-red test
+  // for someone else's bug gets ignored, which is how real regressions hide -
+  // but the 500 is now RECORDED rather than logged. doc2.txt rule 6 says a 5xx
+  // is always a bug, so it surfaces in the run banner, coverage.json and the
+  // dashboard instead of a console.log nobody reads. See helpers/serverError.js.
+  //
+  // If it starts returning 200 the tolerance goes unused, which the banner
+  // reports as "tighten this" - so the fix is noticed rather than silently
+  // leaving a stale allowance behind.
   await step("schema-wide cache statuses (known 500)", async () => {
     const res = await ctx.client.getAllCacheStatusesOfSchema(catalogId, ctx.schemaName);
-    if (res.status === 500) {
-      console.log(
-        "note: getAllCacheStatusesOfSchema returned 500 - confirmed, still-broken behaviour. " +
-          "The project- and catalog-level equivalents both work, so this is specific to the schema variant."
-      );
-    } else {
-      console.log(`note: getAllCacheStatusesOfSchema returned ${res.status} - it may have been fixed; tighten this step.`);
-    }
-    assertStatusIn(res, [200, 500], "getAllCacheStatusesOfSchema");
+    assertStatusIn(res, [200, 500], "getAllCacheStatusesOfSchema", {
+      tolerate5xx:
+        "KNOWN: the schema-level variant returns 500 while the project- and catalog-level ones work " +
+        "(reproduced 2026-07-29, twice). Tighten to [200] when Peaka fixes it.",
+    });
   });
 
   await step("trigger an incremental update", async () => {

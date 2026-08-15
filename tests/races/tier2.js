@@ -1,6 +1,7 @@
 const { assertStatus, assertStatusIn, assert } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
-const { duringSync, duringExport, simultaneously, waitForSettled, sleep } = require("../../helpers/raceWindow");
+const { assertNoServerError } = require("../../helpers/serverError");
+const { duringSync, duringExport, simultaneously, sleep } = require("../../helpers/raceWindow");
 
 const BAD_TOKEN = "sk_test_deliberately_invalid_for_race_testing";
 
@@ -82,7 +83,9 @@ async function runTier2Races(ctx) {
         continue;
       }
       console.log(`  ${label} -> ${o.value.status}`);
-      assert(o.value.status < 500, `${label} returned ${o.value.status} when raced - a server error`);
+      assertNoServerError(o.value, label, {
+        message: `${label} returned ${o.value.status} when raced - a server error`,
+      });
     }
     if (del.ok && del.value.status === 200) untrack(ctx.createdConnectionIds, connectionId);
 
@@ -92,11 +95,10 @@ async function runTier2Races(ctx) {
     await sleep(2000);
     const after = await ctx.client.executeQuery({ statement: sql }, "SIMPLE");
     console.log(`  post-race query -> ${after.status}`);
-    assert(
-      after.status < 500,
-      `Querying through a catalog whose connection was deleted returned ${after.status}: ` +
-        `${JSON.stringify(after.body).slice(0, 200)}. A dead connection must produce a clean 4xx.`
-    );
+    assertNoServerError(after, "Querying through a catalog whose connection was deleted", {
+      message: `Querying through a catalog whose connection was deleted returned ${after.status}: ` +
+    `${JSON.stringify(after.body).slice(0, 200)}. A dead connection must produce a clean 4xx.`,
+        });
     if (baseline.status === 200) {
       // Only meaningful when the baseline proved the catalog WAS queryable.
       assert(
@@ -135,7 +137,9 @@ async function runTier2Races(ctx) {
       `  deleteQuery mid-export -> ${outcome.result.status} (entered window: ${outcome.enteredWindow}, ` +
         `export status at fire: ${outcome.statusAtFire})`
     );
-    assert(outcome.result.status < 500, `deleteQuery mid-export returned ${outcome.result.status} - a server error`);
+    assertNoServerError(outcome.result, "deleteQuery mid-export", {
+      message: `deleteQuery mid-export returned ${outcome.result.status} - a server error`,
+    });
     if (outcome.result.status === 200) untrack(ctx.createdQueryIds, queryId);
 
     // The invariant: the export job must reach a terminal state rather than
@@ -144,7 +148,9 @@ async function runTier2Races(ctx) {
     let finalStatus = null;
     for (let attempt = 1; attempt <= 30; attempt++) {
       const res = await ctx.client.getExport(exportId);
-      assert(res.status < 500, `getExport returned ${res.status} after its query was deleted - a server error`);
+      assertNoServerError(res, "getExport", {
+        message: `getExport returned ${res.status} after its query was deleted - a server error`,
+      });
       if (res.status !== 200) {
         finalStatus = `HTTP_${res.status}`;
         break;
@@ -189,7 +195,9 @@ async function runTier2Races(ctx) {
         continue;
       }
       console.log(`  ${label} -> ${o.value.status}`);
-      assert(o.value.status < 500, `${label} returned ${o.value.status} when raced - a server error`);
+      assertNoServerError(o.value, label, {
+        message: `${label} returned ${o.value.status} when raced - a server error`,
+      });
     }
 
     const swapSucceeded = update.ok && update.value.status === 200;
@@ -209,7 +217,9 @@ async function runTier2Races(ctx) {
       await sleep(1000);
       const after = await ctx.client.executeQuery({ statement: sql }, "SIMPLE");
       console.log(`  post-race query -> ${after.status} (expected to still work: the token never changed)`);
-      assert(after.status < 500, `Post-race query returned ${after.status} - a server error`);
+      assertNoServerError(after, "Post-race query", {
+        message: `Post-race query returned ${after.status} - a server error`,
+      });
     } else {
       await sleep(3000);
       const after = await ctx.client.executeQuery({ statement: sql }, "SIMPLE");
@@ -223,7 +233,9 @@ async function runTier2Races(ctx) {
       } else {
         console.log("  the invalid credential took effect - the query now fails, as scenario 05 expects.");
       }
-      assert(after.status < 500, `Post-swap query returned ${after.status} - a server error`);
+      assertNoServerError(after, "Post-swap query", {
+        message: `Post-swap query returned ${after.status} - a server error`,
+      });
     }
 
     const delCat = await ctx.client.deleteCatalog(catalogId);
@@ -262,7 +274,9 @@ async function runTier2Races(ctx) {
       `  deleteCatalog mid-sync -> ${outcome.result.status} (entered window: ${outcome.enteredWindow}, ` +
         `cache status at fire: ${outcome.statusAtFire})`
     );
-    assert(outcome.result.status < 500, `deleteCatalog mid-sync returned ${outcome.result.status} - a server error`);
+    assertNoServerError(outcome.result, "deleteCatalog mid-sync", {
+      message: `deleteCatalog mid-sync returned ${outcome.result.status} - a server error`,
+    });
     if (outcome.result.status === 200) untrack(ctx.createdCatalogIds, catalogId);
 
     // Orphan check: is the cache still enumerable at project level?

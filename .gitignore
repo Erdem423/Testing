@@ -10,3 +10,12 @@ model.txt
 helpers/pairwiseGenerate.js
 helpers/pictWrapper.js
 tools/pict/
+
+# Scratch scripts - these have held live API keys. Never commit.
+trash.py
+scratch*.py
+
+# The instructor's own spec document - source material this suite was built
+# from, not something this repo should redistribute. See memory:
+# doc2-is-inspiration-not-a-script.
+doc2.txt

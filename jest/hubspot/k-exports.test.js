@@ -10,12 +10,8 @@
  */
 // requireToken: false - this scenario never calls createConnection, so
 // HUBSPOT_ACCESS_TOKEN isn't needed (see helpers/env.js's checkCredentials).
-const {
-  buildFreshCtx,
-  requireCredentials,
-  runTag,
-  credentialCheck: check,
-} = require("../../helpers/buildCtx")("hubspot", { requireToken: false });
+const { buildFreshCtx, requireCredentials, runTag, checkFor } = require("../../helpers/buildCtx");
+const check = checkFor("hubspot");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
 const { runExports } = require("../../tests/hubspot/k-exports");
@@ -29,8 +25,8 @@ if (!check.ok) console.warn(`Skipping K: Export Endpoints (HubSpot) - credential
 maybeTest(
   "K: Export Endpoints",
   async () => {
-    requireCredentials();
-    ctx = buildFreshCtx();
+    requireCredentials("hubspot");
+    ctx = buildFreshCtx("hubspot");
     ctx.runTag = runTag();
     await withScenario("K: Export Endpoints", () => runExports(ctx));
   },

@@ -36,11 +36,8 @@ const { runErrorHandling } = require("../../tests/hubspot/f-error-handling");
 // requireToken: false - B/C/F only read the pre-existing HubSpot catalog,
 // they never call createConnection, so HUBSPOT_ACCESS_TOKEN isn't needed
 // here even though it's required for G/H/L/M/N (see helpers/env.js).
-const {
-  buildFreshCtx,
-  requireCredentials,
-  credentialCheck: check,
-} = require("../../helpers/buildCtx")("hubspot", { requireToken: false });
+const { buildFreshCtx, requireCredentials, checkFor } = require("../../helpers/buildCtx");
+const check = checkFor("hubspot");
 
 // One ctx per category, populated by that category's own test. Kept
 // module-scoped (not shared between tests) purely so afterAll can clean up
@@ -59,16 +56,16 @@ if (!check.ok) {
 }
 
 maybeConcurrent("B: Catalog & Schema Discovery", async () => {
-  requireCredentials();
-  ctxB = buildFreshCtx();
+  requireCredentials("hubspot");
+  ctxB = buildFreshCtx("hubspot");
   await withScenario("B: Catalog & Schema Discovery", () => runCatalogSchemaDiscovery(ctxB));
 });
 
 maybeConcurrent(
   "C: Data Correctness & Cache Behavior",
   async () => {
-    requireCredentials();
-    ctxC = buildFreshCtx();
+    requireCredentials("hubspot");
+    ctxC = buildFreshCtx("hubspot");
     await withScenario("C: Data Correctness & Cache Behavior", () => runDataAndCache(ctxC));
   },
   // Generous, same reasoning as Stripe's: this caches 3 tables and waits for
@@ -78,8 +75,8 @@ maybeConcurrent(
 );
 
 maybeConcurrent("F: Error Handling & Edge Cases", async () => {
-  requireCredentials();
-  ctxF = buildFreshCtx();
+  requireCredentials("hubspot");
+  ctxF = buildFreshCtx("hubspot");
   await withScenario("F: Error Handling & Edge Cases", () => runErrorHandling(ctxF));
 });
 

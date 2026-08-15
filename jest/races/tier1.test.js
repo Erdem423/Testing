@@ -18,36 +18,32 @@
  * Also runs SEQUENTIALLY (one test, plain `test()`), because every step here
  * competes for the same table.
  */
-const {
-  buildFreshCtx,
-  requireCredentials,
-  runTag,
-  credentialCheck: check,
-} = require("../../helpers/buildCtx")("stripe");
+const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
+const { gateFor } = require("../../helpers/preflight");
 const { assertSafeToRaceOrThrow } = require("../../helpers/racePreflight");
 const { runTier1Races } = require("../../tests/races/tier1");
 
-let ctx = null;
+// GATED like every other Stripe-dependent scenario: these cache `customers`,
+// so without Stripe credentials there is nothing to race against and the
+// tier must SKIP rather than throw. The beforeAll below is guarded too -
+// it performs live API calls that would fail the same way.
+const gate = gateFor("RACE-T1: Cache operation conflicts", "stripe.customers");
 
-// SKIP, not FAIL, when credentials are missing/placeholder - see helpers/env.js.
-const maybeTest = check.ok ? test : test.skip;
-if (!check.ok) console.warn(`Skipping RACE-T1 - credentials not configured:\n${check.errors.join("\n")}`);
+let ctx = null;
 
 // Fail fast if another run looks active - see helpers/racePreflight.js. These
 // tests manufacture races, so overlapping them with anything else produces
 // failures that look like regressions but are not. That has happened twice.
-// Guarded by check.ok so an unconfigured connector doesn't throw here before
-// the skip even has a chance to take effect.
 beforeAll(async () => {
-  if (!check.ok) return;
+  if (!gate.ok) return; // scenario is skipped - nothing to guard
   requireCredentials();
   await assertSafeToRaceOrThrow(buildFreshCtx().client, (line) => console.log(line));
 }, 30000);
 
-maybeTest(
-  "RACE-T1: Cache operation conflicts",
+(gate.ok ? test : test.skip)(
+  gate.name,
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();

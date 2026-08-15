@@ -11,12 +11,8 @@
  */
 // requireToken: false - this scenario never calls createConnection, so
 // HUBSPOT_ACCESS_TOKEN isn't needed (see helpers/env.js's checkCredentials).
-const {
-  buildFreshCtx,
-  requireCredentials,
-  runTag,
-  credentialCheck: check,
-} = require("../../helpers/buildCtx")("hubspot", { requireToken: false });
+const { buildFreshCtx, requireCredentials, runTag, checkFor } = require("../../helpers/buildCtx");
+const check = checkFor("hubspot");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
 const { runQueries } = require("../../tests/hubspot/i-queries");
@@ -30,8 +26,8 @@ if (!check.ok) console.warn(`Skipping I: Saved Query Endpoints (HubSpot) - crede
 maybeTest(
   "I: Saved Query Endpoints",
   async () => {
-    requireCredentials();
-    ctx = buildFreshCtx();
+    requireCredentials("hubspot");
+    ctx = buildFreshCtx("hubspot");
     ctx.runTag = runTag();
     await withScenario("I: Saved Query Endpoints", () => runQueries(ctx));
   },
