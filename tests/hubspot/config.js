@@ -14,6 +14,13 @@
  * requireCredentials("hubspot"), rather than that being expressed here.
  */
 module.exports = {
+  // "hubspot" matches this folder's name, so the picker already found it -
+  // declared explicitly for the same reason as the others (see
+  // tests/postgres/config.js). Not measured live here: no HubSpot catalog
+  // was available in the project this was checked against, so this preserves
+  // exactly the behaviour that was already working rather than guessing at a
+  // different value.
+  catalogTypes: ["hubspot"],
   requiredEnv: ["PEAKA_HUBSPOT_CATALOG_ID", "PEAKA_HUBSPOT_SCHEMA_NAME"],
 
   catalogIdEnv: "PEAKA_HUBSPOT_CATALOG_ID",

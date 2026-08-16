@@ -13,6 +13,11 @@
 module.exports = {
   // Checked by helpers/env.js on top of the core credentials every connector
   // needs (PEAKA_API_KEY, PEAKA_PROJECT_ID).
+  // Measured live: "stripe" - the same as this folder's name, which is why
+  // the dashboard's picker worked for Stripe while silently failing for
+  // connectors whose catalogType differs. Declared explicitly anyway so it
+  // stops being a coincidence.
+  catalogTypes: ["stripe"],
   requiredEnv: ["STRIPE_TEST_TOKEN", "PEAKA_CATALOG_ID", "PEAKA_SCHEMA_NAME"],
 
   catalogIdEnv: "PEAKA_CATALOG_ID",

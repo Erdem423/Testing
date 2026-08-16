@@ -33,6 +33,9 @@
  * a secret; the password would be.
  */
 module.exports = {
+  // Measured live: "peaka_mongodb", not "mongodb". See tests/postgres/
+  // config.js for why this has to be declared rather than inferred.
+  catalogTypes: ["peaka_mongodb"],
   requiredEnv: ["PEAKA_MONGO_CATALOG_ID", "PEAKA_MONGO_SCHEMA_NAME"],
 
   catalogIdEnv: "PEAKA_MONGO_CATALOG_ID",

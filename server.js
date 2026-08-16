@@ -361,8 +361,23 @@ app.post("/api/peaka/disconnect", (req, res) => {
  *
  * Each result is cross-referenced against discoverConnectors() so the
  * frontend knows which ones this repo can actually run tests for (hasTests)
- * - a project may well have catalogs (Mongo, Postgres, Pinecone, ...) this
- * suite doesn't cover yet.
+ * - a project may well have catalogs (Pinecone, ...) this suite doesn't
+ * cover yet.
+ *
+ * MATCHING IS DECLARED, NOT GUESSED. This used to pair a catalog with a test
+ * folder by `folder.id === catalog.catalogType`, which holds only where the
+ * two happen to be spelled the same. Measured live, Peaka returns
+ * "peaka_postgres" and "peaka_mongodb" - so Stripe and HubSpot matched by
+ * luck while real, working Postgres and MongoDB connections were reported as
+ * "No test suite yet". Each folder's tests/<id>/config.js now declares its
+ * own catalogTypes; the folder-id equality is kept only as a fallback for
+ * any connector added later that hasn't declared one.
+ *
+ * Folders that need no connection at all (peaka-tables, whose tables live in
+ * the built-in `peaka` catalog with a null connectionId) declare
+ * requiresConnection: false and are appended for every project. Without that
+ * they were unreachable from the UI entirely, since the catalog they live in
+ * is filtered out as internal plumbing.
  */
 app.get("/api/peaka/projects/:projectId/connectors", async (req, res) => {
   if (!session.apiKey) {
@@ -377,9 +392,16 @@ app.get("/api/peaka/projects/:projectId/connectors", async (req, res) => {
       return res.json({ ok: false, error: `Could not list catalogs for this project (status ${catalogsRes.status}).` });
     }
     const testFolders = discoverConnectors(); // { id, displayName, icon, scenarios }[]
+
+    const folderForCatalogType = (catalogType) =>
+      testFolders.find((f) => {
+        const declared = (loadConnectorConfig(f.id) || {}).catalogTypes;
+        return Array.isArray(declared) ? declared.includes(catalogType) : f.id === catalogType;
+      });
+
     const catalogs = (Array.isArray(catalogsRes.body) ? catalogsRes.body : []).filter((c) => c.connectionId); // drop internal/built-in catalogs (connectionId null/"")
     const connectors = catalogs.map((c) => {
-      const folder = testFolders.find((f) => f.id === c.catalogType);
+      const folder = folderForCatalogType(c.catalogType);
       return {
         connectionId: c.connectionId,
         name: c.displayName || c.name,
@@ -391,6 +413,27 @@ app.get("/api/peaka/projects/:projectId/connectors", async (req, res) => {
         scenarioCount: folder ? folder.scenarios.length : 0,
       };
     });
+
+    // Connection-less folders, offered for every project. connectionId stays
+    // null on purpose: resolveConnectorEnv() returns null without one, which
+    // is exactly right here - these folders declare no catalog/schema env to
+    // resolve (peaka-tables' requiredEnv is empty).
+    for (const folder of testFolders) {
+      const config = loadConnectorConfig(folder.id) || {};
+      if (config.requiresConnection === false) {
+        connectors.push({
+          connectionId: null,
+          name: folder.displayName,
+          type: "internal",
+          hasTests: true,
+          folderId: folder.id,
+          displayName: folder.displayName,
+          icon: folder.icon,
+          scenarioCount: folder.scenarios.length,
+        });
+      }
+    }
+
     res.json({ ok: true, connectors });
   } catch (err) {
     res.json({ ok: false, error: err.message });
