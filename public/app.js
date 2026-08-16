@@ -36,6 +36,20 @@
   const projectBackBtn = document.getElementById("project-back-btn");
   const projectSwitchAccountBtn = document.getElementById("project-switch-account-btn");
 
+  // Project-view batch controls - several connectors at once, which is what
+  // the concurrent backend exists for.
+  const projectRunSelectedBtn = document.getElementById("project-run-selected-btn");
+  const projectRunSelectedLabel = document.getElementById("project-run-selected-label");
+  const projectStopAllBtn = document.getElementById("project-stop-all-btn");
+  const projectRunningNoteEl = document.getElementById("project-running-note");
+
+  // folderId -> { card, status, track, fill, connector } for the cards
+  // currently on screen, so a run can repaint just its own card. Rebuilt
+  // whenever the project view renders.
+  const connectorCards = new Map();
+  // Which connectors are ticked for the next batch run.
+  const selectedConnectorIds = new Set();
+
   const breadcrumbRunnerHomeBtn = document.getElementById("breadcrumb-runner-home");
   const breadcrumbRunnerProjectBtn = document.getElementById("breadcrumb-runner-project");
   const breadcrumbRunnerConnectorEl = document.getElementById("breadcrumb-runner-connector");
@@ -268,22 +282,101 @@
     }
 
     connectorGridEl.innerHTML = "";
-    for (const connector of data.connectors) {
+    connectorCards.clear();
+    exclusiveFolders.clear();
+
+    // Companions (the race folders) render immediately after the connector
+    // they exercise rather than in list order, so "Concurrency Races" reads
+    // as a mode of Stripe rather than a peer of it.
+    const primaries = data.connectors.filter((c) => !c.companionOf);
+    const ordered = [];
+    for (const primary of primaries) {
+      ordered.push(primary);
+      for (const c of data.connectors) {
+        if (c.companionOf && c.companionOf === primary.folderId) ordered.push(c);
+      }
+    }
+    // Anything whose parent is not in this project still gets shown rather
+    // than silently dropped.
+    for (const c of data.connectors) if (!ordered.includes(c)) ordered.push(c);
+
+    for (const connector of ordered) {
+      if (connector.exclusive && connector.folderId) exclusiveFolders.add(connector.folderId);
       connectorGridEl.appendChild(buildConnectorCard(project, connector));
     }
     connectorGridEl.classList.remove("hidden");
+
+    // Scenario lists for every runnable connector, so a batch can start
+    // without a round trip per card and the cards can show totals.
+    await Promise.all(
+      ordered.filter((c) => c.hasTests).map((c) => ensureFolderState({
+        id: c.folderId,
+        displayName: c.displayName,
+        icon: c.icon,
+        scenarioCount: c.scenarioCount,
+      }))
+    );
+
+    // Resync against the server so the cards reflect runs this page did not
+    // start itself.
+    //
+    // Measured, so nobody expects more of it than it gives: this does NOT
+    // survive a reload. server.js kills a run's child when its EventSource
+    // disconnects (req.on("close"), deliberately - see its comment about not
+    // burning API calls for a run nobody is watching), so by the time a
+    // reloaded page asks, the run it would have resumed is already gone. What
+    // this does cover is a SECOND tab, or a run launched outside this page.
+    try {
+      const activeRes = await fetch("/api/active-runs");
+      const active = await activeRes.json();
+      for (const id of active.running || []) {
+        if (folderStates[id]) folderStates[id].isRunning = true;
+      }
+    } catch (_) {
+      // Cosmetic resync only - never worth blocking the view over.
+    }
+
+    updateProjectRunControls();
   }
 
+  /**
+   * One connector card.
+   *
+   * A <div> rather than the <button> this used to be: it now holds a checkbox
+   * for multi-select, and nesting a control inside a button is invalid and
+   * breaks keyboard behaviour. The navigation affordance moved to an inner
+   * button covering everything except the checkbox.
+   */
   function buildConnectorCard(project, connector) {
-    const card = document.createElement("button");
-    card.type = "button";
+    const card = document.createElement("div");
     card.className = "card connector-card" + (connector.hasTests ? "" : " card-disabled");
-    card.disabled = !connector.hasTests;
+    if (connector.companionOf) card.classList.add("connector-card-companion");
+    card.dataset.folderId = connector.folderId || "";
+
+    if (connector.hasTests) {
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "connector-check";
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) selectedConnectorIds.add(connector.folderId);
+        else selectedConnectorIds.delete(connector.folderId);
+        updateProjectRunControls();
+      });
+      card.appendChild(checkbox);
+    }
+
+    // Everything but the checkbox navigates into the runner. Deliberately
+    // still live during a run: folderStates persists, so the runner shows
+    // that folder's scenarios streaming in real time.
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "connector-open";
+    open.disabled = !connector.hasTests;
 
     const icon = document.createElement("span");
     icon.className = "card-icon";
     icon.textContent = connector.icon || FALLBACK_CONNECTOR_ICON;
-    card.appendChild(icon);
+    open.appendChild(icon);
 
     const info = document.createElement("div");
     info.className = "card-info";
@@ -291,16 +384,120 @@
     name.className = "card-title";
     name.textContent = connector.name;
     info.appendChild(name);
+
     const sub = document.createElement("span");
     sub.className = "card-sub";
     sub.textContent = connector.hasTests ? `${connector.scenarioCount} scenarios` : "No test suite yet";
     info.appendChild(sub);
-    card.appendChild(info);
+
+    if (connector.exclusive) {
+      const note = document.createElement("span");
+      note.className = "card-note";
+      note.textContent = "runs alone — blocks every other connector";
+      info.appendChild(note);
+    }
+
+    // Live status, filled by refreshCardFor() from this folder's own state.
+    const status = document.createElement("span");
+    status.className = "card-status hidden";
+    info.appendChild(status);
+
+    const track = document.createElement("div");
+    track.className = "step-progress-track hidden";
+    const fill = document.createElement("div");
+    fill.className = "step-progress-fill";
+    track.appendChild(fill);
+    info.appendChild(track);
+
+    open.appendChild(info);
+    card.appendChild(open);
 
     if (connector.hasTests) {
-      card.addEventListener("click", () => showRunner(project, connector));
+      open.addEventListener("click", () => showRunner(project, connector));
+      connectorCards.set(connector.folderId, { card, status, track, fill, connector });
     }
     return card;
+  }
+
+  /**
+   * Repaints one card's live status from folderStates. Called on every step
+   * and result event, and cheap enough to do so - it touches three nodes.
+   */
+  function refreshCardFor(folderId) {
+    const entry = connectorCards.get(folderId);
+    const state = folderStates[folderId];
+    if (!entry || !state) return;
+
+    const total = state.scenarios.length;
+    let pass = 0;
+    let fail = 0;
+    let skipped = 0;
+    let done = 0;
+    for (const sc of state.scenarios) {
+      const status = scenarioStatus(state, sc.name);
+      if (!status || status === "running") continue;
+      done++;
+      if (status === "pass" || status === "warn") pass++;
+      else if (status === "fail") fail++;
+      else if (status === "skipped") skipped++;
+    }
+
+    if (!state.hasRun) {
+      entry.status.classList.add("hidden");
+      entry.track.classList.add("hidden");
+      return;
+    }
+
+    const parts = [];
+    if (pass) parts.push(`${pass} passed`);
+    if (fail) parts.push(`${fail} failed`);
+    if (skipped) parts.push(`${skipped} skipped`);
+    entry.status.textContent = state.isRunning
+      ? `running — ${done}/${total}${parts.length ? " · " + parts.join(" · ") : ""}`
+      : parts.join(" · ") || "no results";
+    entry.status.classList.remove("hidden");
+    entry.status.classList.toggle("card-status-running", state.isRunning);
+    entry.status.classList.toggle("card-status-fail", !state.isRunning && fail > 0);
+
+    entry.track.classList.remove("hidden");
+    entry.fill.classList.toggle("failed", fail > 0);
+    entry.fill.style.width = `${Math.round((done / Math.max(total, 1)) * 100)}%`;
+  }
+
+  /**
+   * The project view's Run/Stop controls and every checkbox's enabled state.
+   *
+   * Exclusivity is enforced here rather than only on the server: ticking the
+   * races folder disables the rest and vice versa, so the rule is visible
+   * before clicking Run instead of arriving as a 409 afterwards.
+   */
+  function updateProjectRunControls() {
+    if (!projectRunSelectedBtn) return;
+
+    const exclusivePicked = [...selectedConnectorIds].some((id) => isExclusiveFolder(id));
+    const anyNonExclusivePicked = [...selectedConnectorIds].some((id) => !isExclusiveFolder(id));
+
+    for (const [folderId, entry] of connectorCards) {
+      const checkbox = entry.card.querySelector(".connector-check");
+      if (!checkbox) continue;
+      checkbox.checked = selectedConnectorIds.has(folderId);
+      const blockedByExclusive = isExclusiveFolder(folderId)
+        ? anyNonExclusivePicked
+        : exclusivePicked;
+      checkbox.disabled = blockedByExclusive || !canStartClientSide(folderId);
+      entry.card.classList.toggle("card-blocked", checkbox.disabled && !checkbox.checked);
+      refreshCardFor(folderId);
+    }
+
+    const count = selectedConnectorIds.size;
+    const startable = [...selectedConnectorIds].filter((id) => canStartClientSide(id));
+    projectRunSelectedBtn.disabled = startable.length === 0;
+    projectRunSelectedLabel.textContent = `Run selected (${count})`;
+
+    const running = runningFolderIds().length;
+    projectStopAllBtn.classList.toggle("hidden", running === 0);
+    projectRunningNoteEl.classList.toggle("hidden", running === 0);
+    projectRunningNoteEl.textContent = running === 1 ? "1 connector running" : `${running} connectors running`;
   }
 
   async function showRunner(project, connector) {
@@ -311,10 +508,12 @@
     breadcrumbRunnerProjectBtn.textContent = project.name;
     breadcrumbRunnerConnectorEl.textContent = connector.displayName;
 
-    // Reset any previous connector's state - the left/center/right panes are
-    // rebuilt from scratch for whichever connector was just picked.
+    // Only the left pane's DOM is rebuilt for whichever connector was picked.
+    // folderStates is deliberately NOT reset: a batch run started from the
+    // project view records results for several folders at once, and clearing
+    // here would wipe exactly the detail this click is asking to see. Stale
+    // node references in each state's `el` are replaced by addFolderSection().
     folderTreeEl.innerHTML = "";
-    folderStates = {};
     currentFolderId = null;
 
     const folderRes = await fetch("/api/folders");
@@ -389,31 +588,72 @@
   //   collapsed: boolean,
   //   el: { scenarioListEl, searchInputEl, selectAllCheckboxEl, totalCountEl, sectionBodyEl, chevronEl },
   // }
+  //
+  // PERSISTS ACROSS VIEW SWITCHES. showRunner() used to reset this on every
+  // entry, which was fine while the runner was the only thing that could run
+  // tests. Now a batch started from the project view writes results here for
+  // several folders at once, and wiping on entry would destroy exactly the
+  // detail you clicked in to see. `el` is the one part that does NOT survive:
+  // the runner rebuilds its own markup, so those node references go stale and
+  // are replaced per entry - see addFolderSection().
   let folderStates = {};
 
-  // Center/right panes and the Run buttons operate on whichever folder was
-  // most recently interacted with (checkbox toggled, search typed, etc).
-  // With one folder this is trivially that folder; if a second folder is
-  // ever added, interacting with either folder's checkboxes switches which
-  // one drives the center/right panes and Run buttons.
+  // Which folder the runner view is currently DISPLAYING. Purely a view
+  // concern now: runs are keyed by folder id and proceed regardless of what
+  // is on screen, so this only decides which panes get repainted.
   let currentFolderId = null;
 
-  let isRunning = false;
   let configOk = false;
 
   function currentState() {
     return currentFolderId ? folderStates[currentFolderId] : null;
   }
 
+  /** Folders with a run in flight right now. */
+  function runningFolderIds() {
+    return Object.keys(folderStates).filter((id) => folderStates[id].isRunning);
+  }
+
+  /**
+   * Mirrors server.js's canStart() so a button disables instead of the user
+   * clicking and getting a 409 back. `exclusive` comes from the server on the
+   * connector list (race folders, see tests/races/config.js's racesFor) -
+   * deliberately not re-derived here, so there is one source of truth.
+   */
+  function canStartClientSide(folderId) {
+    const state = folderStates[folderId];
+    if (state && state.isRunning) return false;
+    const running = runningFolderIds();
+    if (isExclusiveFolder(folderId)) return running.length === 0;
+    return !running.some((id) => isExclusiveFolder(id));
+  }
+
+  // folderId -> true for folders the server reports as needing exclusive
+  // access. Populated from the connector list in showProject().
+  const exclusiveFolders = new Set();
+  function isExclusiveFolder(folderId) {
+    return exclusiveFolders.has(folderId);
+  }
+
   // ---------- Data loading ----------
   // Builds the left-pane section for ONE folder (the connector picked in
   // showRunner()) - the dashboard now only ever shows a single connector's
   // scenarios at a time, scoped to the project+connection chosen upstream.
-  async function addFolderSection(folder) {
+  /**
+   * Creates a folder's run-state if it has none yet, and returns it.
+   *
+   * Split out from addFolderSection() because the project view needs to start
+   * a run for a folder WITHOUT building the runner's left-pane DOM for it -
+   * a batch can cover five connectors while the runner shows none of them.
+   * Idempotent: an existing state is returned untouched, which is what lets
+   * results survive navigating in and out of the runner.
+   */
+  async function ensureFolderState(folder) {
+    if (folderStates[folder.id]) return folderStates[folder.id];
+
     const scenariosRes = await fetch(`/api/scenarios?folder=${encodeURIComponent(folder.id)}`);
     const scenariosData = await scenariosRes.json();
-
-    const state = {
+    folderStates[folder.id] = {
       folder,
       scenarios: scenariosData.scenarios,
       selected: new Set(),
@@ -425,9 +665,18 @@
       activeResultName: null,
       hasRun: false,
       collapsed: false,
+      isRunning: false,
       el: {},
     };
-    folderStates[folder.id] = state;
+    return folderStates[folder.id];
+  }
+
+  async function addFolderSection(folder) {
+    // Reuses existing data when there is any - a batch run started from the
+    // project view may already have populated results and steps for this
+    // folder, and rebuilding would throw them away. Only `el` is replaced
+    // below, since the runner tears its own markup out on every entry.
+    const state = await ensureFolderState(folder);
 
     // ---- Section header (VS Code style: chevron + icon + name + count) ----
     const header = document.createElement("div");
@@ -1062,26 +1311,61 @@
   }
 
   // ---------- Buttons ----------
+  /** The runner view's own controls, for the folder it is displaying. */
   function updateButtonStates() {
     const state = currentState();
     const selectedCount = state ? state.selected.size : 0;
-    runAllBtn.disabled = isRunning || !configOk || !state;
-    runSelectedBtn.disabled = isRunning || !configOk || selectedCount === 0;
-    runSelectedLabel.textContent = isRunning ? "Running…" : `Run Selected (${selectedCount})`;
-    runSpinner.classList.toggle("hidden", !isRunning);
-    stopRunBtn.classList.toggle("hidden", !isRunning);
+    const running = Boolean(state && state.isRunning);
+    const startable = Boolean(state) && configOk && canStartClientSide(state.folder.id);
+    runAllBtn.disabled = !startable;
+    runSelectedBtn.disabled = !startable || selectedCount === 0;
+    runSelectedLabel.textContent = running ? "Running…" : `Run Selected (${selectedCount})`;
+    runSpinner.classList.toggle("hidden", !running);
+    stopRunBtn.classList.toggle("hidden", !running);
     stopRunBtn.disabled = false; // re-enabled on every render, incl. right after a click - see stopRunBtn's own listener
   }
 
-  function runTests(namesFilter) {
-    const state = currentState();
+  /**
+   * Every run control on both views. A run starting or finishing changes what
+   * is startable everywhere, not just where it was launched from - an
+   * exclusive folder blocks all the others, and finishing unblocks them - so
+   * the two are always refreshed together.
+   */
+  function refreshRunControls() {
+    updateButtonStates();
+    updateProjectRunControls();
+  }
+
+  /**
+   * Starts one folder's run. Folder-explicit rather than implicitly "whatever
+   * the runner is showing", because a batch from the project view starts
+   * several of these at once while the runner may be displaying none of them.
+   *
+   * `connection` carries that folder's own project/connection - it cannot come
+   * from the selectedConnector global any more, since concurrent runs each
+   * have their own.
+   */
+  function runTests(folderId, namesFilter, connection) {
+    const state = folderStates[folderId];
     if (!state) return;
 
-    isRunning = true;
+    state.isRunning = true;
     state.hasRun = true;
-    updateButtonStates();
+    refreshRunControls();
 
     const targetNames = namesFilter || state.scenarios.map((sc) => sc.name);
+
+    // An unfiltered run means "all of them", so mark them selected. The
+    // runner's centre list and badges both render `state.selected`, not
+    // `state.results` - without this a batch started from the project view
+    // recorded every result correctly and then showed an empty runner when
+    // you clicked in to read them. The runner's own Run All already did this
+    // for itself; doing it here makes both entry points agree.
+    if (!namesFilter) {
+      state.selected = new Set(targetNames);
+      if (state.el && state.el.selectAllCheckboxEl) state.el.selectAllCheckboxEl.checked = true;
+    }
+
     for (const name of targetNames) {
       state.results[name] = { status: "running" };
       state.steps[name] = {}; // drop any step state from a previous run
@@ -1093,19 +1377,46 @@
     if (!state.activeResultName || !targetNames.includes(state.activeResultName)) {
       state.activeResultName = targetNames[0];
     }
-    renderFolderScenarioList(state.folder.id);
-    renderCenterList();
-    if (state.activeResultName) renderRightPanel();
+    if (folderId === currentFolderId) {
+      renderFolderScenarioList(folderId);
+      renderCenterList();
+      if (state.activeResultName) renderRightPanel();
+    }
 
-    let url = `/api/run-stream?folder=${encodeURIComponent(state.folder.id)}`;
+    // Only results for scenarios THIS run actually asked for. Jest's
+    // onTestFileResult reports every test in each matched file, so a
+    // "Run Selected" of one scenario also reports its file-mates as pending -
+    // recording those would leave a scenario showing a result it never
+    // earned the next time you tick it. Filtered here rather than in the
+    // reporter: HubSpot gates with maybeConcurrent/test.concurrent.skip,
+    // which carries no [SKIPPED:] marker, so a marker-based filter there
+    // would re-break the very reporting that was just fixed.
+    const wanted = new Set(targetNames);
+
+    const conn = connection || (selectedProject && selectedConnector
+      ? { projectId: selectedProject.id, connectionId: selectedConnector.connectionId }
+      : null);
+
+    let url = `/api/run-stream?folder=${encodeURIComponent(folderId)}`;
     if (namesFilter) {
       url += `&names=${encodeURIComponent(namesFilter.join(","))}`;
     }
-    if (selectedProject && selectedConnector) {
-      url += `&projectId=${encodeURIComponent(selectedProject.id)}&connectionId=${encodeURIComponent(selectedConnector.connectionId)}`;
+    if (conn && conn.projectId && conn.connectionId) {
+      url += `&projectId=${encodeURIComponent(conn.projectId)}&connectionId=${encodeURIComponent(conn.connectionId)}`;
     }
 
     const source = new EventSource(url);
+
+    // Scoped to THIS run. A module-level `finished` flag would let one
+    // folder's completion suppress cleanup for another still in flight.
+    let finished = false;
+    function finishRun() {
+      if (finished) return;
+      finished = true;
+      state.isRunning = false;
+      refreshRunControls();
+      if (folderId === currentFolderId) renderCenterList();
+    }
 
     source.onmessage = (evt) => {
       const event = JSON.parse(evt.data);
@@ -1135,14 +1446,20 @@
           };
           // Refresh the centre list on every step event so per-row progress
           // updates for ALL scenarios, not just the selected one. The right
-          // panel still only details the active scenario.
-          renderCenterList();
-          if (state.activeResultName === event.scenario) renderRightPanel();
+          // panel still only details the active scenario. Both are skipped
+          // entirely when this folder is not the one on screen - its state is
+          // still updated, so switching to it later shows everything.
+          if (folderId === currentFolderId) {
+            renderCenterList();
+            if (state.activeResultName === event.scenario) renderRightPanel();
+          }
+          refreshCardFor(folderId);
         }
         return;
       }
 
       if (event.type === "result") {
+        if (!wanted.has(event.name)) return; // a file-mate this run never asked for - see `wanted` above
         state.results[event.name] = {
           // SKIP is its own outcome. It used to collapse into "fail" here,
           // which showed a scenario gated off for missing data as a red error.
@@ -1151,9 +1468,12 @@
           duration: event.duration,
           failureMessages: event.failureMessages,
         };
-        renderFolderScenarioList(state.folder.id);
-        renderCenterList();
-        if (state.activeResultName === event.name) renderRightPanel();
+        if (folderId === currentFolderId) {
+          renderFolderScenarioList(folderId);
+          renderCenterList();
+          if (state.activeResultName === event.name) renderRightPanel();
+        }
+        refreshCardFor(folderId);
       } else if (event.type === "done") {
         finishRun();
         source.close();
@@ -1168,13 +1488,18 @@
             state.results[name] = { status: "cancelled", message: event.message };
           }
         }
-        renderFolderScenarioList(state.folder.id);
-        renderCenterList();
-        renderRightPanel();
+        if (folderId === currentFolderId) {
+          renderFolderScenarioList(folderId);
+          renderCenterList();
+          renderRightPanel();
+        }
+        refreshCardFor(folderId);
         finishRun();
         source.close();
       } else if (event.type === "fatal") {
-        alert(`Test run failed unexpectedly: ${event.message}`);
+        // Named, because with several folders running "a run failed" would
+        // not say which.
+        alert(`${state.folder.displayName}: test run failed unexpectedly — ${event.message}`);
         finishRun();
         source.close();
       }
@@ -1186,45 +1511,70 @@
     };
   }
 
-  let finished = false;
-  function finishRun() {
-    if (finished) return;
-    finished = true;
-    isRunning = false;
-    updateButtonStates();
-    renderCenterList();
-  }
-
   runAllBtn.addEventListener("click", () => {
-    if (isRunning) return;
     const state = currentState();
-    if (!state) return;
-    state.selected = new Set(state.scenarios.map((sc) => sc.name));
-    renderFolderScenarioList(state.folder.id);
-    finished = false;
-    runTests(null); // no filter = run everything in this folder
+    if (!state || !canStartClientSide(state.folder.id)) return;
+    runTests(state.folder.id, null); // no filter = run everything; runTests marks them all selected
   });
 
   runSelectedBtn.addEventListener("click", () => {
     const state = currentState();
-    if (isRunning || !state || state.selected.size === 0) return;
-    finished = false;
-    runTests(Array.from(state.selected));
+    if (!state || state.selected.size === 0 || !canStartClientSide(state.folder.id)) return;
+    runTests(state.folder.id, Array.from(state.selected));
   });
 
   stopRunBtn.addEventListener("click", async () => {
-    if (!isRunning) return;
+    const state = currentState();
+    if (!state || !state.isRunning) return;
     // Disabled immediately so a second click while the request is in flight
-    // can't double-fire - re-enabled by updateButtonStates() on the next
-    // render regardless (e.g. if this request fails).
+    // can't double-fire - re-enabled by the next render regardless (e.g. if
+    // this request fails).
     stopRunBtn.disabled = true;
+    // NAMES ITS FOLDER. /api/cancel-run with no body means "stop everything",
+    // which was indistinguishable from "stop this one" while only a single
+    // run could exist - and wrong the moment a sibling connector is running.
+    await cancelRun(state.folder.id);
+  });
+
+  // ---------- Project view: run several connectors at once ----------
+  projectRunSelectedBtn.addEventListener("click", () => {
+    // Snapshot first: runTests() flips isRunning, which canStartClientSide()
+    // reads, so iterating the live set would let the first start block the
+    // rest from ever launching.
+    const toRun = [...selectedConnectorIds].filter((id) => canStartClientSide(id));
+    for (const folderId of toRun) {
+      const entry = connectorCards.get(folderId);
+      const connector = entry && entry.connector;
+      runTests(folderId, null, {
+        projectId: selectedProject && selectedProject.id,
+        // Each folder carries its OWN connection - peaka-tables has none, and
+        // a race folder borrows its parent's. Reading a single global here
+        // would give concurrent runs the same connection.
+        connectionId: connector && connector.connectionId,
+      });
+    }
+    refreshRunControls();
+  });
+
+  projectStopAllBtn.addEventListener("click", async () => {
+    projectStopAllBtn.disabled = true;
+    await cancelRun(null); // no folder = stop everything in flight
+    projectStopAllBtn.disabled = false;
+  });
+
+  /** Stops one folder's run, or every run in flight when folderId is omitted. */
+  async function cancelRun(folderId) {
     try {
-      await fetch("/api/cancel-run", { method: "POST" });
+      await fetch("/api/cancel-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(folderId ? { folder: folderId } : {}),
+      });
     } catch (_) {
       // The "cancelled" SSE event (or source.onerror) still resolves the UI
       // even if this particular request failed to send.
     }
-  });
+  }
 
   clearBtn.addEventListener("click", () => {
     const state = currentState();

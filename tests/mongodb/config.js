@@ -36,6 +36,10 @@ module.exports = {
   // Measured live: "peaka_mongodb", not "mongodb". See tests/postgres/
   // config.js for why this has to be declared rather than inferred.
   catalogTypes: ["peaka_mongodb"],
+  // Fallback when PEAKA_*_SCHEMA_NAME is unset - the dashboard resolves a
+  // picked connection to a schema, and "first one listed" is wrong for
+  // several connectors. See helpers/peakaAccount.js's pickSchema().
+  defaultSchema: "e_commerce",
   requiredEnv: ["PEAKA_MONGO_CATALOG_ID", "PEAKA_MONGO_SCHEMA_NAME"],
 
   catalogIdEnv: "PEAKA_MONGO_CATALOG_ID",

@@ -92,10 +92,17 @@
       </nav>
       <div class="picker-heading">
         <h1 id="project-title"></h1>
-        <p>Select a connector to run its test suite against this project.</p>
+        <p>Tick connectors to run several at once, or click one to open its scenarios.</p>
       </div>
       <div id="project-loading" class="picker-loading">Loading connectors…</div>
       <div id="project-error" class="picker-error hidden"></div>
+      <div class="project-run-bar">
+        <button id="project-run-selected-btn" class="btn btn-primary" disabled>
+          <span id="project-run-selected-label">Run selected (0)</span>
+        </button>
+        <button id="project-stop-all-btn" class="btn btn-danger hidden">Stop all</button>
+        <span id="project-running-note" class="project-running-note hidden"></span>
+      </div>
       <div id="connector-grid" class="card-grid hidden"></div>
       <div id="project-empty" class="picker-empty hidden">No connections found in this project.</div>
     </div>

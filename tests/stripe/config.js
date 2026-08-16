@@ -18,6 +18,10 @@ module.exports = {
   // connectors whose catalogType differs. Declared explicitly anyway so it
   // stops being a coincidence.
   catalogTypes: ["stripe"],
+  // Fallback when PEAKA_*_SCHEMA_NAME is unset - the dashboard resolves a
+  // picked connection to a schema, and "first one listed" is wrong for
+  // several connectors. See helpers/peakaAccount.js's pickSchema().
+  defaultSchema: "payment",
   requiredEnv: ["STRIPE_TEST_TOKEN", "PEAKA_CATALOG_ID", "PEAKA_SCHEMA_NAME"],
 
   catalogIdEnv: "PEAKA_CATALOG_ID",

@@ -27,6 +27,10 @@ module.exports = {
   // Measured live: "google_ads", not this folder's name. See
   // tests/postgres/config.js for why the dashboard needs this declared.
   catalogTypes: ["google_ads"],
+  // Fallback when PEAKA_*_SCHEMA_NAME is unset - the dashboard resolves a
+  // picked connection to a schema, and "first one listed" is wrong for
+  // several connectors. See helpers/peakaAccount.js's pickSchema().
+  defaultSchema: "public",
 
   // Only the CLI path (`npm test`) needs these. The dashboard reaches this
   // project by connecting with its key and picking it in the project grid,

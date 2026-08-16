@@ -36,6 +36,10 @@ module.exports = {
   // coincidence for Stripe and HubSpot and false here, so a perfectly good
   // Postgres connection was listed as "No test suite yet".
   catalogTypes: ["peaka_postgres"],
+  // Fallback when PEAKA_*_SCHEMA_NAME is unset - the dashboard resolves a
+  // picked connection to a schema, and "first one listed" is wrong for
+  // several connectors. See helpers/peakaAccount.js's pickSchema().
+  defaultSchema: "public",
   requiredEnv: ["PEAKA_PG_CATALOG_ID", "PEAKA_PG_SCHEMA_NAME"],
 
   catalogIdEnv: "PEAKA_PG_CATALOG_ID",
