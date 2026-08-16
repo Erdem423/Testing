@@ -34,13 +34,13 @@
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 const { fork } = require("child_process");
 const { loadDotEnv, checkCredentials, loadConnectorConfig, PLACEHOLDER_VALUES } = require("./helpers/env");
 const { PeakaClient } = require("./helpers/peakaClient");
 const { discoverAllProjects, resolveDynamicConnectorConfig } = require("./helpers/peakaAccount");
 const { SKIP_MARKER } = require("./helpers/preflight");
-const reporterBus = require("./jest/reporterBus");
-const { SIDECAR_DIR: SERVER_ERROR_DIR } = require("./helpers/serverError");
+const { reapStaleServerErrorFiles } = require("./helpers/serverError");
 
 loadDotEnv();
 
@@ -107,34 +107,74 @@ app.use("/api", requireSameOrigin);
 
 app.use(express.static(path.join(__dirname, "public")));
 
-let runInProgress = false;
-// The forked Jest process for whatever run is currently in progress (see
-// /api/run-stream), and whether /api/cancel-run has been asked to kill it -
-// tracked here so the cancel endpoint (a separate HTTP request from the SSE
-// stream's own) can reach it, and so the run-stream handler knows whether an
-// exit was requested or the run just finished normally.
-let currentChild = null;
-let cancelRequested = false;
+// Every dashboard run currently in flight, keyed by folder id. Runs are now
+// CONCURRENT: each one is its own forked child (see /api/run-stream and
+// jest/runInChild.js), so several connectors can be exercised at once. What
+// used to be three globals - runInProgress / currentChild / cancelRequested -
+// is per-run state here instead, because with more than one run alive at a
+// time a single `currentChild` would let one run's Stop kill another's
+// process, and a single `cancelRequested` would mislabel an unrelated run's
+// exit as cancelled.
+//
+// activeRuns: Map<folderId, { runId, child, send, sawDone, cancelRequested }>
+const activeRuns = new Map();
+
+// The race folders test behaviour under deliberately manufactured concurrent
+// load against Peaka itself. A sibling run hammering the same project would
+// contaminate exactly what they measure, so they stay mutually exclusive with
+// everything - including each other and themselves. This mirrors
+// jest.races.config.js, which runs both of them with maxWorkers: 1 for the
+// same reason.
+const EXCLUSIVE_FOLDERS = new Set(["races", "hubspot-races"]);
+
+function canStart(folderId) {
+  if (activeRuns.has(folderId)) {
+    return { ok: false, reason: `${folderId} is already running.` };
+  }
+  if (EXCLUSIVE_FOLDERS.has(folderId) && activeRuns.size > 0) {
+    return { ok: false, reason: `${folderId} needs exclusive access - another connector is currently running.` };
+  }
+  for (const id of activeRuns.keys()) {
+    if (EXCLUSIVE_FOLDERS.has(id)) {
+      return { ok: false, reason: `${id} is running and needs exclusive access - try again once it finishes.` };
+    }
+  }
+  return { ok: true };
+}
 
 const TESTS_DIR = path.join(__dirname, "tests");
 const PORT = process.env.PORT || 3000;
 
 /**
  * Live per-step events arrive here over HTTP from helpers/stepReporter.js,
- * and get re-emitted onto the same bus the Jest reporter uses so they reach
- * the browser through the existing SSE stream.
+ * and from jest/browserReporter.js, tagged with the runId of whichever run
+ * produced them, and get forwarded onto that run's own SSE stream.
  *
- * WHY HTTP RATHER THAN THE SHARED BUS DIRECTLY: test files can't reach
- * reporterBus. Everything a test requires goes through jest-runtime's
- * sandboxed module registry, so a `require` of reporterBus from inside a test
- * yields a different EventEmitter than this process holds. Reporters are
- * exempt (Jest loads those itself), which is why browserReporter.js can use
- * the bus but test code cannot. See helpers/stepReporter.js for the full note.
+ * WHY HTTP: neither can reach this process directly. Test files run inside
+ * jest-runtime's sandboxed module registry, and both they and the reporter
+ * now live in a forked child with its own memory, so a shared module
+ * singleton would not be the same object on both ends. HTTP is the one
+ * channel that works regardless. See helpers/stepReporter.js for the longer
+ * note.
+ *
+ * ROUTED BY runId, not broadcast. Events used to be re-emitted onto a shared
+ * EventEmitter that every open SSE stream listened to - fine when only one
+ * run could exist, but with concurrent runs that would splice one connector's
+ * steps into another connector's results. The runId is minted per run below
+ * and baked into the child's PEAKA_STEP_REPORT_URL, so it can only ever match
+ * the run that actually emitted it.
  */
 app.post("/api/step-event", (req, res) => {
   const event = req.body;
-  if (event && typeof event.type === "string") {
-    reporterBus.emit("event", event);
+  const runId = req.query.runId;
+  if (event && typeof event.type === "string" && runId) {
+    for (const run of activeRuns.values()) {
+      if (run.runId === runId) {
+        if (event.type === "done") run.sawDone = true;
+        run.send(event);
+        break;
+      }
+    }
   }
   res.status(204).end();
 });
@@ -382,7 +422,7 @@ const CREDENTIAL_CONNECTOR_FOR_FOLDER = {
  * so the old .env-only CLI path (and any request that omits them) is
  * unaffected.
  */
-async function applyDynamicConnectorConfig(connectorId, projectId, connectionId) {
+async function resolveConnectorEnv(connectorId, projectId, connectionId) {
   if (!projectId || !connectionId) return null;
   const config = loadConnectorConfig(connectorId);
   if (!config) return null;
@@ -393,11 +433,13 @@ async function applyDynamicConnectorConfig(connectorId, projectId, connectionId)
   }
 
   const resolved = await resolveDynamicConnectorConfig({ apiKey, projectId, connectionId, connectorId });
-  process.env.PEAKA_PROJECT_ID = projectId;
-  process.env[config.catalogIdEnv] = resolved.catalogId;
-  if (config.catalogNameEnv) process.env[config.catalogNameEnv] = resolved.catalogName;
-  process.env[config.schemaEnv] = resolved.schemaName;
-  return resolved;
+  const overlay = {
+    PEAKA_PROJECT_ID: projectId,
+    [config.catalogIdEnv]: resolved.catalogId,
+    [config.schemaEnv]: resolved.schemaName,
+  };
+  if (config.catalogNameEnv) overlay[config.catalogNameEnv] = resolved.catalogName;
+  return overlay;
 }
 
 app.get("/api/config-status", async (req, res) => {
@@ -414,11 +456,14 @@ app.get("/api/config-status", async (req, res) => {
   // the previous default.
   const connectorId = CREDENTIAL_CONNECTOR_FOR_FOLDER[req.query.folder] || "stripe";
 
+  let overlay;
   try {
     // projectId/connectionId come from the dashboard's project/connector
-    // picker - see public/app.js's showRunner(). Resolves and overwrites the
-    // catalog/schema env vars for this connector before checking them below.
-    await applyDynamicConnectorConfig(connectorId, req.query.projectId, req.query.connectionId);
+    // picker - see public/app.js. Resolved into a per-request overlay rather
+    // than written into process.env: several connectors can now be checked
+    // and run concurrently, and a shared global would let whichever request
+    // resolved last decide what every other one sees.
+    overlay = await resolveConnectorEnv(connectorId, req.query.projectId, req.query.connectionId);
   } catch (err) {
     return res.json({ ok: false, errors: [err.message] });
   }
@@ -432,7 +477,7 @@ app.get("/api/config-status", async (req, res) => {
   // a special case here. Individual scenarios that DO need the token
   // (G/H/L/M/N, races) still gate themselves correctly - see
   // tests/hubspot/checkTokenCredentials.js.
-  const check = checkCredentials(connectorId);
+  const check = checkCredentials(connectorId, overlay);
   if (check.ok) {
     res.json({ ok: true });
   } else {
@@ -441,12 +486,6 @@ app.get("/api/config-status", async (req, res) => {
 });
 
 app.get("/api/run-stream", async (req, res) => {
-  if (runInProgress) {
-    res.writeHead(409, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "A test run is already in progress" }));
-    return;
-  }
-
   const folderId = req.query.folder;
   const connector = discoverConnectors().find((c) => c.id === folderId);
   if (!connector) {
@@ -455,12 +494,22 @@ app.get("/api/run-stream", async (req, res) => {
     return;
   }
 
+  const gate = canStart(folderId);
+  if (!gate.ok) {
+    res.writeHead(409, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: gate.reason }));
+    return;
+  }
+
+  let overlay;
   try {
-    // Same resolution as /api/config-status - overwrites this connector's
-    // catalog/schema env vars for the run about to happen, from the
-    // project/connection picked in the dashboard.
+    // Same resolution as /api/config-status, but the result is handed to THIS
+    // run's child process below rather than written into the server's own
+    // process.env - two runs starting at once would otherwise overwrite each
+    // other's project/catalog between resolving and forking, and one could
+    // silently execute against the other's project.
     const credConnectorId = CREDENTIAL_CONNECTOR_FOR_FOLDER[folderId] || folderId;
-    await applyDynamicConnectorConfig(credConnectorId, req.query.projectId, req.query.connectionId);
+    overlay = await resolveConnectorEnv(credConnectorId, req.query.projectId, req.query.connectionId);
   } catch (err) {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: err.message }));
@@ -498,51 +547,48 @@ app.get("/api/run-stream", async (req, res) => {
     Connection: "keep-alive",
   });
 
+  // Guarded: once this run's child exits (or the browser disconnects) the
+  // response is ended, and a late event would otherwise throw and take the
+  // whole server down with it.
   const send = (event) => {
+    if (res.writableEnded) return;
     res.write(`data: ${JSON.stringify(event)}\n\n`);
   };
 
-  // Listen on the shared bus for the duration of this run only - events
-  // arrive here via /api/step-event (POSTed by the forked Jest process's
-  // reporter/step helpers - see jest/browserReporter.js and helpers/
-  // stepReporter.js), which re-emits onto this bus.
-  //
-  // sawDone tracks whether browserReporter.js's onRunComplete already fired
-  // (a NORMAL end of run - whether the tests passed or failed doesn't matter,
-  // Jest still exits non-zero on a failing run). Only an exit we DIDN'T see a
-  // "done" for means something crashed before completing normally.
-  let sawDone = false;
-  const onBusEvent = (event) => {
-    if (event.type === "done") sawDone = true;
-    send(event);
-  };
-  reporterBus.on("event", onBusEvent);
+  // This run's own identity and state. `sawDone` records whether
+  // browserReporter.js's onRunComplete already fired (a NORMAL end of run -
+  // passing or failing doesn't matter, Jest exits non-zero either way). Only
+  // an exit we did NOT see a "done" for means something crashed. It lives on
+  // the run entry rather than in a closure variable so /api/step-event can
+  // set it while routing that run's events - see the handler above.
+  const runId = crypto.randomUUID();
+  const run = { runId, child: null, send, sawDone: false, cancelRequested: false };
+  activeRuns.set(folderId, run);
 
-  runInProgress = true;
-  cancelRequested = false;
-  const stepReportUrl = `http://127.0.0.1:${PORT}/api/step-event`;
+  const stepReportUrl = `http://127.0.0.1:${PORT}/api/step-event?runId=${runId}`;
 
-  // Clear per-run server-error records. jest.globalSetup.js does this too,
-  // but the inline config below deliberately does NOT include globalSetup
-  // (same reason upstream's did not: it's a purpose-built dashboard config,
-  // not jest.config.js) - so without this line a dashboard run would leave
-  // records behind that the next `npm test` would report as phantom warnings.
-  try {
-    fs.rmSync(SERVER_ERROR_DIR, { recursive: true, force: true });
-  } catch (_) {
-    // Reporting hygiene only - never worth failing a run over.
-  }
+  // Reap only records whose owning process is gone, rather than wiping the
+  // whole directory as this used to. With concurrent runs the directory holds
+  // one pid file per live run, and a blanket delete here would destroy a
+  // sibling run's records while it was still writing them. See
+  // helpers/serverError.js.
+  reapStaleServerErrorFiles();
 
   // Forked as its own OS process (not called in-process via runCLI, like the
-  // original design) specifically so it can be killed - see /api/cancel-run
-  // and jest/runInChild.js for why. child.send()/IPC is unused on purpose:
-  // live events reach this process over the SAME HTTP mechanism regardless
-  // of whether Jest runs in-process or forked (stepReportUrl above), so
-  // runInChild.js stays a dumb runner with no message-passing logic.
-  currentChild = fork(path.join(__dirname, "jest", "runInChild.js"), [], {
+  // original design) for two reasons now: so it can be KILLED (see
+  // /api/cancel-run and jest/runInChild.js), and so runs can be CONCURRENT -
+  // Jest's own internals are not safely re-entrant within one process, and
+  // each child gets its own isolated env below. child.send()/IPC is unused on
+  // purpose: live events reach this process over HTTP (stepReportUrl above),
+  // so runInChild.js stays a dumb runner with no message-passing logic.
+  run.child = fork(path.join(__dirname, "jest", "runInChild.js"), [], {
     cwd: __dirname,
     env: {
       ...process.env,
+      // Per-child, never written into the server's own process.env - this is
+      // what stops two concurrent runs resolving different projects and then
+      // clobbering each other's before either forks.
+      ...(overlay || {}),
       PEAKA_STEP_REPORT_URL: stepReportUrl,
       JEST_RUN_CONFIG: JSON.stringify({
         // Same project config (jest.config.js) plus our streaming reporter
@@ -564,12 +610,12 @@ app.get("/api/run-stream", async (req, res) => {
     },
   });
 
-  currentChild.on("error", (err) => {
+  run.child.on("error", (err) => {
     send({ type: "fatal", message: err.message });
   });
 
-  currentChild.on("exit", (code) => {
-    if (cancelRequested) {
+  run.child.on("exit", (code) => {
+    if (run.cancelRequested) {
       // Jest's afterAll() cleanup never ran for whatever was mid-flight -
       // real Peaka resources it had already created may still exist. Said
       // plainly in the event so the browser can warn, not hide it.
@@ -577,35 +623,63 @@ app.get("/api/run-stream", async (req, res) => {
         type: "cancelled",
         message: "Run stopped. Any Peaka resources the stopped scenario had already created were NOT cleaned up (afterAll never ran) - check Peaka Studio if in doubt.",
       });
-    } else if (code !== 0 && !sawDone) {
+    } else if (code !== 0 && !run.sawDone) {
       // Non-zero exit is EXPECTED and normal for a run with failing tests
       // (Jest itself exits 1 then) - browserReporter.js's "done" event
       // already covers that case on its own. This branch only catches a
       // real crash: the process died before ever completing a run.
       send({ type: "fatal", message: `Test process exited unexpectedly with code ${code}` });
     }
-    reporterBus.off("event", onBusEvent);
-    currentChild = null;
-    cancelRequested = false;
-    runInProgress = false;
+    // Only clear the map if this is still OUR entry - guards the narrow race
+    // where a fresh run for the same folder started in the gap between this
+    // child exiting and this handler firing, which would otherwise evict the
+    // new run rather than this one.
+    if (activeRuns.get(folderId) === run) activeRuns.delete(folderId);
     res.end();
   });
 
   // If the browser navigates away / closes the EventSource mid-run, there's
   // no one left to show results to - stop burning real API calls/resources
   // for a run nobody's watching, same spirit as the explicit Stop button.
+  // Kills only THIS run's child; sibling runs for other connectors are
+  // untouched, which is the whole point of running them concurrently.
   req.on("close", () => {
-    if (currentChild) currentChild.kill();
+    if (activeRuns.get(folderId) === run && run.child) run.child.kill();
   });
 });
 
+/**
+ * Stops one run. `folder` says which - with concurrent runs there is no
+ * single "current" child to kill any more, and stopping Postgres must not
+ * take MongoDB down with it. Omitting it stops every run in flight, which is
+ * what a "Stop all" control wants.
+ */
 app.post("/api/cancel-run", (req, res) => {
-  if (!currentChild) {
-    return res.json({ ok: false, error: "No run in progress." });
+  const folderId = req.body && req.body.folder;
+
+  if (!folderId) {
+    if (activeRuns.size === 0) return res.json({ ok: false, error: "No run in progress." });
+    const stopped = [];
+    for (const [id, run] of activeRuns) {
+      run.cancelRequested = true;
+      if (run.child) run.child.kill();
+      stopped.push(id);
+    }
+    return res.json({ ok: true, stopped });
   }
-  cancelRequested = true;
-  currentChild.kill(); // on Windows this always force-terminates; on POSIX SIGTERM is Node's default kill() signal
-  res.json({ ok: true });
+
+  const run = activeRuns.get(folderId);
+  if (!run) {
+    return res.json({ ok: false, error: `No run in progress for ${folderId}.` });
+  }
+  run.cancelRequested = true;
+  run.child.kill(); // on Windows this always force-terminates; on POSIX SIGTERM is Node's default kill() signal
+  res.json({ ok: true, stopped: [folderId] });
+});
+
+/** Which folders are running right now - lets a reloaded page resync its buttons. */
+app.get("/api/active-runs", (req, res) => {
+  res.json({ running: [...activeRuns.keys()] });
 });
 
 // Bound explicitly to 127.0.0.1 - without a host, Node listens on ALL

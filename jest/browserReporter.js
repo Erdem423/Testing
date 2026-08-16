@@ -2,21 +2,24 @@
  * Custom Jest reporter - streams live results to the dashboard over HTTP
  * (POSTing to PEAKA_STEP_REPORT_URL) instead of writing to a file (like
  * jest-junit) or the terminal (like the default reporter). server.js's
- * /api/step-event endpoint re-emits whatever arrives here onto
- * jest/reporterBus.js, which the SSE handler forwards to the browser.
+ * /api/step-event endpoint routes whatever arrives here to the matching
+ * run's SSE stream, which forwards it to the browser.
  *
  * Jest instantiates this class itself (`new BrowserStreamReporter(...)`) as
  * part of running the suite - we never construct it ourselves.
  *
- * WHY HTTP AND NOT A SHARED IN-PROCESS EVENT BUS: this reporter now runs
- * inside a Jest process that server.js forks (see jest/runInChild.js), not
- * in server.js's own process - a forked child has its own separate memory,
- * so a shared module singleton (jest/reporterBus.js) would no longer be the
- * SAME object on both ends. This mirrors exactly the reasoning already
- * documented in helpers/stepReporter.js for why per-step events go over HTTP
- * rather than the bus directly - now the same reasoning applies to whole-
- * test-result events too, for the same underlying reason (different
- * process), not because it stopped working for a different reason.
+ * WHY HTTP AND NOT A SHARED IN-PROCESS EVENT BUS: this reporter runs inside
+ * a Jest process that server.js forks (see jest/runInChild.js), not in
+ * server.js's own process - a forked child has its own separate memory, so a
+ * shared module singleton could never be the SAME object on both ends. This
+ * mirrors the reasoning already documented in helpers/stepReporter.js for
+ * why per-step events go over HTTP; the same applies to whole-test-result
+ * events, for the same underlying reason (different process).
+ *
+ * The URL carries a runId query parameter, minted per run by server.js. That
+ * is what keeps CONCURRENT runs apart: several connectors can be running at
+ * once, and without the tag there would be no way to tell which run's stream
+ * a given result belonged to.
  *
  * With PEAKA_STEP_REPORT_URL unset - i.e. a plain `npm test` - every post()
  * is a no-op, so the CLI behaves exactly as before.
