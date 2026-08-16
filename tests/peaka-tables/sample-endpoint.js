@@ -93,7 +93,18 @@ async function runPtSample(ctx) {
     const res = await ctx.client.getTableSample(TABLE_NAME);
     assertStatusIn(res, [200], "getTableSample (empty real table)");
     const lines = String(res.body).split("\n");
-    assertEqual(lines[0], "text,name,age", "sample header");
+    // Compared as a SET, not a sequence. Measured across consecutive runs of
+    // this exact scenario, Peaka returned "text,name,age" once and
+    // "text,age,name" the next - the column order genuinely varies between
+    // calls, and nothing documents an order to rely on. Asserting the literal
+    // string made this fail intermittently for a reason that says nothing
+    // about the endpoint's actual behaviour. What matters is WHICH columns
+    // appear: the real ones, behind one unexplained leading 'text'.
+    assertEqual(
+      lines[0].split(",").sort().join(","),
+      ["text", ...COLUMNS.map((c) => c.name)].sort().join(","),
+      "sample header columns (order-independent)"
+    );
     assertEqual(lines.length, 6, "line count: 1 header + 5 canned rows, regardless of the table holding 0 real rows");
   });
 
@@ -117,13 +128,28 @@ async function runPtSample(ctx) {
       `The sample body contains the real imported marker value - it is supposed to be entirely synthetic. Body: ${body}`
     );
 
+    // Columns are located BY NAME from the header rather than by fixed
+    // position - the order varies between calls (see the header step above),
+    // and with hardcoded indices a flipped order silently checked 'age'
+    // against the VARCHAR rule and 'name' against the BIGINT one. That would
+    // fail for a reason that reads like a type bug and is not one.
+    const header = body.split("\n")[0].split(",");
+    const col = (name) => {
+      const i = header.indexOf(name);
+      assert(i !== -1, `sample header is missing the '${name}' column: ${header.join(",")}`);
+      return i;
+    };
+    const iText = col("text");
+    const iName = col("name");
+    const iAge = col("age");
+
     const dataLines = body.split("\n").slice(1);
     assertEqual(dataLines.length, 5, "canned data rows");
     for (const line of dataLines) {
       const cells = line.split(",");
-      assertEqual(cells[0], '"sample text"', `leading 'text' column cell: ${line}`);
-      assertEqual(cells[1], '"sample text"', `VARCHAR 'name' column cell: ${line}`);
-      assert(/^\d+$/.test(cells[2]), `BIGINT 'age' column cell should be a bare integer, got: ${JSON.stringify(cells[2])} (line: ${line})`);
+      assertEqual(cells[iText], '"sample text"', `leading 'text' column cell: ${line}`);
+      assertEqual(cells[iName], '"sample text"', `VARCHAR 'name' column cell: ${line}`);
+      assert(/^\d+$/.test(cells[iAge]), `BIGINT 'age' column cell should be a bare integer, got: ${JSON.stringify(cells[iAge])} (line: ${line})`);
     }
     console.log(`  FINDING confirmed: canned, type-aware sample, real data never appears - ${JSON.stringify(dataLines)}`);
   });

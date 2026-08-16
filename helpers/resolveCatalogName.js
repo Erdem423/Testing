@@ -10,7 +10,7 @@ const { assertStatus, assert, assertEqual } = require("./assert");
  * populated it - each test builds its own independent ctx (see
  * jest/stripe-connector.test.js), so nothing is shared between them.
  */
-async function resolveCatalogName(ctx) {
+async function resolveCatalogName(ctx, { expectedCatalogType } = {}) {
   if (ctx.catalogName) return; // already resolved (e.g. called twice, or set some other way)
 
   assert(ctx.catalogId, "Requires PEAKA_CATALOG_ID to be set in .env");
@@ -33,7 +33,16 @@ async function resolveCatalogName(ctx) {
 
   assertStatus(res, 200, "getCatalog");
   assert(res.body && res.body.name, "Expected catalog response to include a queryable name");
-  assertEqual(res.body.catalogType, ctx.connectorId || "stripe", "catalogType");
+  // The catalog being resolved is USUALLY the ctx's own connector's, so
+  // ctx.connectorId is the right default - but not always, and assuming it
+  // made one scenario permanently red. tests/peaka-tables/federated-join-cap.js
+  // deliberately borrows the STRIPE catalog into a peaka-tables ctx (the whole
+  // point of a federated join is spanning two connectors), so this asserted
+  // that Stripe's catalog was of type "peaka-tables" - a type no catalog can
+  // ever have - and failed every single run.
+  //
+  // A caller that knowingly resolves another connector's catalog says so.
+  assertEqual(res.body.catalogType, expectedCatalogType || ctx.connectorId || "stripe", "catalogType");
   // `name` is the generated queryable slug (used in SQL), distinct from `displayName`.
   ctx.catalogName = res.body.name;
 }
