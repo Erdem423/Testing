@@ -107,6 +107,15 @@ PEAKA_MONGO_CATALOG_ID=your_mongo_catalog_id
 PEAKA_MONGO_SCHEMA_NAME=your_mongo_database_name
 PEAKA_MONGO_CONNECTION_ID=your_mongo_connection_id
 
+# Google Ads folder (omit to skip those scenarios). The ONLY connector in a
+# separate Peaka project, so it carries its own key/project pair - see
+# tests/google-ads/config.js's apiKeyEnv/projectIdEnv.
+PEAKA_API_KEY_ADS=your_google_ads_project_api_key
+PEAKA_PROJECT_ID_ADS=your_google_ads_project_id
+PEAKA_GOOGLE_ADS_CATALOG_ID=your_google_ads_catalog_id
+PEAKA_GOOGLE_ADS_CATALOG_NAME=gads
+PEAKA_GOOGLE_ADS_SCHEMA_NAME=public
+
 EXPECTED_CUSTOMER_COUNT_NON_CACHE=100
 
 # HubSpot folder (omit to skip those scenarios; OAuth2, see the table below)
@@ -139,6 +148,8 @@ with missing/placeholder credentials has its scenarios reported as **skipped** (
 | `PEAKA_MONGO_CATALOG_ID` | An existing MongoDB catalog. The folder reuses it rather than creating one — no connection string is ever stored |
 | `PEAKA_MONGO_SCHEMA_NAME` | The Mongo *database* to test — Peaka reports each Mongo database as one "schema", e.g. `e_commerce` |
 | `PEAKA_MONGO_CONNECTION_ID` | The connection behind that catalog. An id, not a secret |
+| `PEAKA_API_KEY_ADS` / `PEAKA_PROJECT_ID_ADS` | Google Ads lives in a **different Peaka project** with its own key. Only the CLI needs these — the dashboard reaches that project by connecting with its key and picking it in the project grid |
+| `PEAKA_GOOGLE_ADS_CATALOG_ID` / `PEAKA_GOOGLE_ADS_SCHEMA_NAME` | An existing Google Ads catalog and its schema (`public`). The folder reuses the connection — creating one needs real OAuth credentials this suite doesn't hold |
 | `EXPECTED_CUSTOMER_COUNT_NON_CACHE` | The known live-query cap (`100`). A **product constant**, not your data — a deliberate regression test, see [FINDINGS.md](FINDINGS.md#1-live-queries-cannot-return-more-than-100-rows) before changing it |
 | `ALLOW_INCOMPLETE` | Set to `true` to exit 0 despite skipped scenarios. See [Incomplete runs](#incomplete-runs) |
 | `FAIL_ON_SERVER_ERROR` | Set to `true` to exit non-zero if any 5xx was observed, even a tolerated one. See [Server errors](#server-errors) |
@@ -319,6 +330,28 @@ tradeoff any "paste your API key" tool makes). It is never persisted to disk —
 not just the home page) clears it from the server's memory immediately; restarting the server does the
 same. See `server.js`'s `session` object and `classifyApiKey()`.
 
+### Running several connectors at once
+
+The project screen lists every connector in the project. **Tick as many as you like and click "Run
+selected"** — they run *concurrently*, each in its own forked process, each with its own live progress on
+its card. Click any card while it runs to watch that connector's scenarios stream in; go back and click
+another to watch its. Results persist, so clicking in after a batch shows the real per-step detail rather
+than an empty runner.
+
+**The race folders are the exception.** `Concurrency Races` (and `HubSpot Races`) measure behaviour under
+deliberately manufactured concurrent load, so a sibling run hammering the same project is exactly the
+contamination they exist to observe. They stay mutually exclusive with everything: ticking one greys out
+every other connector, and vice versa. They appear indented beneath the connector they exercise, since
+they are a *mode* of testing it rather than a separate connection. `server.js`'s `canStart()` enforces
+this server-side too — the UI only mirrors it so the rule is visible before you click rather than
+arriving as a `409` after.
+
+**Stop all** stops everything in flight; a single connector's own **Stop** (in its runner) stops only
+that one and leaves its siblings running.
+
+Reloading the page mid-run does **not** resume: `server.js` kills a run when its `EventSource`
+disconnects, deliberately, so an unwatched run stops burning real API calls.
+
 ### Stopping a run
 
 A run can be genuinely stopped mid-flight — click **Stop** (appears next to **Run All** while a run is in
@@ -478,6 +511,9 @@ tests/
   postgres/                 - a second connector; fixture.js discovers its data at runtime
     meta.js
     pg-a-discovery.js … pg-i-metadata.js
+  google-ads/               - the first connector in a SEPARATE Peaka project, with its own key
+    meta.js, config.js, fixture.js (retry-tolerant; the connector is measurably flaky)
+    ga-a-discovery.js … ga-h-queries.js
   peaka-tables/              - no connection/catalog needed; lives in the built-in `peaka` catalog
     meta.js
     csv-import-*.js (happy-path, mapping-errors, type-coercion, repeats-append),
@@ -502,11 +538,13 @@ jest/
     incompleteRun.js        - skip banner + server-error banner, coverage.json, exit code
   runInChild.js             - thin runCLI() wrapper, forked as its own OS process by server.js so
                               a run can be killed (the Stop button) - see "Stopping a run" above
-  browserReporter.js        - custom reporter; POSTs results to the dashboard over HTTP (it now
-                              runs inside the forked child, not server.js's own process)
-  reporterBus.js
+  browserReporter.js        - custom reporter; POSTs results to the dashboard over HTTP, tagged
+                              with the run's id (it runs inside the forked child, not server.js's
+                              own process)
+  google-ads/               - ga-*.test.js, one per scenario
 public/                     - dashboard frontend (index.html, app.js, styles.css, favicon.svg)
-server.js                   - dashboard backend (Express; forks jest/runInChild.js per run)
+server.js                   - dashboard backend (Express; forks one jest/runInChild.js per run,
+                              several at a time - see "Running several connectors at once")
 jest.config.js              - main suite config
 jest.races.config.js        - concurrency suite config
 jest.globalSetup.js         - runs preflight once before any test file loads

@@ -68,11 +68,33 @@ for (const folder of folders) {
 
   const titles = new Set();
   const scenarioArgs = new Set();
+  // The declaration forms that take a scenario name first. Per-file aliases
+  // get added to this below; these four are always available.
+  const callNames = new Set(["gatedTest", "gateFor", "test", "test\\.concurrent"]);
   for (const f of fs.readdirSync(jestDir)) {
     if (!f.endsWith(".test.js")) continue;
     const src = fs.readFileSync(path.join(jestDir, f), "utf8");
     // test( / test.concurrent( / gatedTest( / gateFor( - all take the name first.
-    for (const m of src.matchAll(/\b(?:gatedTest|gateFor|test(?:\.concurrent)?)\(\s*\r?\n?\s*"([^"]+)"/g)) {
+    //
+    // ALIASES COUNT TOO, and are discovered rather than listed. Several files
+    // gate by binding a local name first:
+    //
+    //   const maybeTest = check.ok ? test : test.skip;
+    //   maybeTest("B: Catalog & Schema Discovery", ...)
+    //
+    // A fixed list of call names missed every one of those, so this checker
+    // silently saw ZERO titles across the whole HubSpot folder - 14 scenarios
+    // whose names it was supposed to be guarding drifted unchecked, while it
+    // reported them as "in meta.js but no matching test title". Deriving the
+    // aliases from each file means a differently-named one keeps working.
+    for (const m of src.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*(?!.*\brequire\b)[^;\n]*\btest\b[^;\n]*/g)) {
+      callNames.add(m[1]);
+    }
+    const callPattern = new RegExp(
+      `\\b(?:${[...callNames].join("|")})\\(\\s*\\r?\\n?\\s*"([^"]+)"`,
+      "g"
+    );
+    for (const m of src.matchAll(callPattern)) {
       titles.add(m[1]);
     }
     for (const m of src.matchAll(/withScenario\(\s*"([^"]+)"/g)) scenarioArgs.add(m[1]);
