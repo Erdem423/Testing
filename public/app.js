@@ -326,6 +326,15 @@
       }))
     );
 
+    // Drop selections for anything this project cannot actually offer a
+    // checkbox for - a different project, or a connector that has since
+    // gained a chooser. Left behind, a stale id would count towards
+    // "Run selected (n)" with no visible box to untick it.
+    for (const id of [...selectedConnectorIds]) {
+      const entry = connectorCards.get(id);
+      if (!entry || !entry.card.querySelector(".connector-check")) selectedConnectorIds.delete(id);
+    }
+
     // Resync against the server so the cards reflect runs this page did not
     // start itself.
     //
@@ -362,7 +371,15 @@
     if (connector.companionOf) card.classList.add("connector-card-companion");
     card.dataset.folderId = connector.folderId || "";
 
-    if (connector.hasTests) {
+    // No checkbox on a connector that offers a choice of suites. Ticking it
+    // would be ambiguous - the card stands for two suites, and the box could
+    // only ever mean one of them - so the choice is made in the chooser
+    // instead, and the batch selection stays unambiguous.
+    //
+    // The cost, stated plainly: a connector with a chooser cannot join a
+    // multi-connector batch run. Give it its own checkbox back (drop the
+    // `&& !companions.length`) if that trade stops being worth it.
+    if (connector.hasTests && !companions.length) {
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.className = "connector-check";
@@ -372,6 +389,11 @@
         updateProjectRunControls();
       });
       card.appendChild(checkbox);
+    } else if (connector.hasTests) {
+      // Keeps the icon/text aligned with the checkboxed cards beside it.
+      const spacer = document.createElement("span");
+      spacer.className = "connector-check-spacer";
+      card.appendChild(spacer);
     }
 
     // Everything but the checkbox navigates into the runner. Deliberately
@@ -581,6 +603,11 @@
     const anyNonExclusivePicked = [...selectedConnectorIds].some((id) => !isExclusiveFolder(id));
 
     for (const [folderId, entry] of connectorCards) {
+      // Every card gets its live status refreshed, including the ones with no
+      // checkbox - a connector reached through a chooser still runs, and its
+      // card still has to show that.
+      refreshCardFor(folderId);
+
       const checkbox = entry.card.querySelector(".connector-check");
       if (!checkbox) continue;
       checkbox.checked = selectedConnectorIds.has(folderId);
@@ -589,7 +616,6 @@
         : exclusivePicked;
       checkbox.disabled = blockedByExclusive || !canStartClientSide(folderId);
       entry.card.classList.toggle("card-blocked", checkbox.disabled && !checkbox.checked);
-      refreshCardFor(folderId);
     }
 
     const count = selectedConnectorIds.size;

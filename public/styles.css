@@ -1039,14 +1039,41 @@ body {
 /* A connector with more than one suite pops a chooser instead of navigating
    straight through - see openSuiteMenu(). The chevron says so before the
    click. */
+/* Deliberately prominent: this is the only thing distinguishing a card that
+   opens a choice from one that runs straight through, so a faint 11px glyph
+   was not carrying it. Sits in its own tinted disc, sized like the card icon
+   opposite it. */
 .connector-chevron {
-  font-size: 11px;
-  color: var(--text-dim);
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  align-self: center;
   flex-shrink: 0;
-  transition: transform 0.12s ease;
+  transition: transform 0.16s ease, background 0.12s ease;
 }
+.connector-open:hover .connector-chevron { background: var(--accent-soft-border); }
 .connector-card-open .connector-chevron { transform: rotate(180deg); }
-.connector-card-open { border-color: var(--accent-soft-border); }
+.connector-card-open {
+  border-color: var(--accent-soft-border);
+  box-shadow: var(--shadow-md);
+}
+
+/* Keeps a chooser card's icon lined up with the checkboxed cards next to it. */
+.connector-check-spacer {
+  width: 13px;
+  min-width: 13px;
+  margin: 18px 0 18px 18px;
+  flex-shrink: 0;
+}
 
 .suite-menu {
   position: absolute;
