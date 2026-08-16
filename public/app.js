@@ -285,24 +285,35 @@
     connectorCards.clear();
     exclusiveFolders.clear();
 
-    // Companions (the race folders) render immediately after the connector
-    // they exercise rather than in list order, so "Concurrency Races" reads
-    // as a mode of Stripe rather than a peer of it.
-    const primaries = data.connectors.filter((c) => !c.companionOf);
-    const ordered = [];
-    for (const primary of primaries) {
-      ordered.push(primary);
-      for (const c of data.connectors) {
-        if (c.companionOf && c.companionOf === primary.folderId) ordered.push(c);
-      }
+    // A GROUP, not a card, is the grid item. Ordering companions after their
+    // parent in a flat grid was not enough: the grid reflows, so "Concurrency
+    // Races" landed at the start of the next row with Stripe at the end of
+    // the previous one, and the relationship read as nothing at all. Wrapping
+    // each connector and its companions in one grid cell makes the companion
+    // sit directly beneath the connector it belongs to, whatever the column
+    // count happens to be.
+    const placed = new Set();
+    const groups = [];
+    for (const c of data.connectors) {
+      if (c.companionOf) continue;
+      const companions = data.connectors.filter((x) => x.companionOf && x.companionOf === c.folderId);
+      groups.push([c, ...companions]);
+      placed.add(c);
+      for (const x of companions) placed.add(x);
     }
-    // Anything whose parent is not in this project still gets shown rather
-    // than silently dropped.
-    for (const c of data.connectors) if (!ordered.includes(c)) ordered.push(c);
+    // A companion whose parent is absent from this project still gets shown
+    // rather than silently dropped - on its own, since there is nothing to
+    // nest it under.
+    for (const c of data.connectors) if (!placed.has(c)) groups.push([c]);
 
-    for (const connector of ordered) {
-      if (connector.exclusive && connector.folderId) exclusiveFolders.add(connector.folderId);
-      connectorGridEl.appendChild(buildConnectorCard(project, connector));
+    for (const group of groups) {
+      const groupEl = document.createElement("div");
+      groupEl.className = "connector-group";
+      for (const connector of group) {
+        if (connector.exclusive && connector.folderId) exclusiveFolders.add(connector.folderId);
+        groupEl.appendChild(buildConnectorCard(project, connector));
+      }
+      connectorGridEl.appendChild(groupEl);
     }
     connectorGridEl.classList.remove("hidden");
 
