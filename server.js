@@ -119,23 +119,29 @@ app.use(express.static(path.join(__dirname, "public")));
 // activeRuns: Map<folderId, { runId, child, send, sawDone, cancelRequested }>
 const activeRuns = new Map();
 
-// The race folders test behaviour under deliberately manufactured concurrent
+// A race folder tests behaviour under deliberately manufactured concurrent
 // load against Peaka itself. A sibling run hammering the same project would
-// contaminate exactly what they measure, so they stay mutually exclusive with
-// everything - including each other and themselves. This mirrors
-// jest.races.config.js, which runs both of them with maxWorkers: 1 for the
-// same reason.
-const EXCLUSIVE_FOLDERS = new Set(["races", "hubspot-races"]);
+// contaminate exactly what it measures, so these stay mutually exclusive with
+// everything - including each other and themselves. Mirrors
+// jest.races.config.js, which runs them with maxWorkers: 1 for the same
+// reason.
+//
+// Read from each folder's own config.js (racesFor) rather than listed here,
+// so adding a third race folder needs no server edit - the same principle as
+// discoverConnectors() and catalogTypes.
+function isExclusive(folderId) {
+  return Boolean((loadConnectorConfig(folderId) || {}).racesFor);
+}
 
 function canStart(folderId) {
   if (activeRuns.has(folderId)) {
     return { ok: false, reason: `${folderId} is already running.` };
   }
-  if (EXCLUSIVE_FOLDERS.has(folderId) && activeRuns.size > 0) {
+  if (isExclusive(folderId) && activeRuns.size > 0) {
     return { ok: false, reason: `${folderId} needs exclusive access - another connector is currently running.` };
   }
   for (const id of activeRuns.keys()) {
-    if (EXCLUSIVE_FOLDERS.has(id)) {
+    if (isExclusive(id)) {
       return { ok: false, reason: `${id} is running and needs exclusive access - try again once it finishes.` };
     }
   }
@@ -413,6 +419,37 @@ app.get("/api/peaka/projects/:projectId/connectors", async (req, res) => {
         scenarioCount: folder ? folder.scenarios.length : 0,
       };
     });
+
+    // Race folders, attached to whichever connector they exercise. They have
+    // no catalog of their own - tests/races/ builds a throwaway Stripe
+    // connection, tests/hubspot-races/ a HubSpot one - so catalog discovery
+    // could never find them and both were unreachable from the UI entirely.
+    // Offered only when their parent connector is actually present in this
+    // project, and carrying that parent's connectionId so a run resolves the
+    // same catalog/schema the parent would.
+    for (const folder of testFolders) {
+      const racesFor = (loadConnectorConfig(folder.id) || {}).racesFor;
+      if (!racesFor) continue;
+      const parent = connectors.find((c) => c.folderId === racesFor);
+      if (!parent) continue;
+      connectors.push({
+        connectionId: parent.connectionId,
+        name: folder.displayName,
+        type: parent.type,
+        hasTests: true,
+        folderId: folder.id,
+        displayName: folder.displayName,
+        icon: folder.icon,
+        scenarioCount: folder.scenarios.length,
+        // Rendered as a companion of its parent rather than a peer - these
+        // are a mode of testing an existing connection, not another one.
+        companionOf: racesFor,
+        // Surfaced so the UI can say WHY selecting this disables everything
+        // else, instead of the button mysteriously greying out. Matches
+        // EXCLUSIVE_FOLDERS in canStart().
+        exclusive: true,
+      });
+    }
 
     // Connection-less folders, offered for every project. connectionId stays
     // null on purpose: resolveConnectorEnv() returns null without one, which
