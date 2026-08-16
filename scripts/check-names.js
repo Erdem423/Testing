@@ -28,6 +28,7 @@
  */
 const fs = require("fs");
 const path = require("path");
+const { SKIP_MARKER } = require("../helpers/preflight");
 
 const ROOT = path.join(__dirname, "..");
 const TESTS = path.join(ROOT, "tests");
@@ -40,7 +41,13 @@ function survivesRunSelected(names) {
   const param = names.join(",");
   const parsed = param.split(",").map((n) => n.trim()).filter(Boolean);
   const escaped = parsed.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const re = new RegExp(`^(${escaped.join("|")})$`);
+  // The trailing "( \[SKIPPED: .*)?" mirrors server.js: a gated-off scenario's
+  // real Jest title carries a " [SKIPPED: <reason>]" suffix appended by
+  // gatedTest()/gateFor(), so the pattern has to tolerate it or Jest drops
+  // those tests from collection entirely. Kept in sync here so this check
+  // keeps testing what the button actually does, not what it used to do.
+  const escapedMarker = SKIP_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^(${escaped.join("|")})( ${escapedMarker}.*)?$`);
   return names.filter((n) => re.test(n));
 }
 

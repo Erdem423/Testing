@@ -38,6 +38,7 @@ const { fork } = require("child_process");
 const { loadDotEnv, checkCredentials, loadConnectorConfig, PLACEHOLDER_VALUES } = require("./helpers/env");
 const { PeakaClient } = require("./helpers/peakaClient");
 const { discoverAllProjects, resolveDynamicConnectorConfig } = require("./helpers/peakaAccount");
+const { SKIP_MARKER } = require("./helpers/preflight");
 const reporterBus = require("./jest/reporterBus");
 const { SIDECAR_DIR: SERVER_ERROR_DIR } = require("./helpers/serverError");
 
@@ -475,7 +476,20 @@ app.get("/api/run-stream", async (req, res) => {
   if (typeof namesParam === "string" && namesParam.trim().length > 0) {
     const selectedNames = namesParam.split(",").map((n) => n.trim()).filter(Boolean);
     const escaped = selectedNames.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    testNamePattern = `^(${escaped.join("|")})$`;
+    // A scenario gated OFF for missing data never registers under its plain
+    // meta.js name - gatedTest()/gateFor() (helpers/preflight.js) append
+    // " [SKIPPED: <reason>]" to the title BEFORE Jest ever sees it, so
+    // test.skip's real, collected name is the mutated one. An exact `^(...)$`
+    // pattern built from the plain names therefore never matches it: Jest
+    // silently drops it from the run - not "runs and fails", not "runs and
+    // skips" - excluded from test collection entirely, so no event of any
+    // kind reaches the browser. The result was a scenario stuck as a
+    // permanent, unexplained spinner that no dashboard restart could fix (a
+    // real "Run All", which passes no testNamePattern at all, was never
+    // affected). Allowing an optional skip suffix after each selected name is
+    // what closes that gap.
+    const escapedMarker = SKIP_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    testNamePattern = `^(${escaped.join("|")})( ${escapedMarker}.*)?$`;
   }
 
   res.writeHead(200, {
