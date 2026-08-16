@@ -285,35 +285,33 @@
     connectorCards.clear();
     exclusiveFolders.clear();
 
-    // A GROUP, not a card, is the grid item. Ordering companions after their
-    // parent in a flat grid was not enough: the grid reflows, so "Concurrency
-    // Races" landed at the start of the next row with Stripe at the end of
-    // the previous one, and the relationship read as nothing at all. Wrapping
-    // each connector and its companions in one grid cell makes the companion
-    // sit directly beneath the connector it belongs to, whatever the column
-    // count happens to be.
-    const placed = new Set();
-    const groups = [];
-    for (const c of data.connectors) {
-      if (c.companionOf) continue;
-      const companions = data.connectors.filter((x) => x.companionOf && x.companionOf === c.folderId);
-      groups.push([c, ...companions]);
-      placed.add(c);
-      for (const x of companions) placed.add(x);
-    }
-    // A companion whose parent is absent from this project still gets shown
-    // rather than silently dropped - on its own, since there is nothing to
-    // nest it under.
-    for (const c of data.connectors) if (!placed.has(c)) groups.push([c]);
+    // A companion (a race folder) gets NO card of its own. It is reached by
+    // clicking the connector it exercises, which pops a chooser offering that
+    // connector's ordinary suite and its race suite.
+    //
+    // Tried first and rejected: rendering it as a nested card in the grid.
+    // The grid reflows, so the companion routinely landed in a different row
+    // from its parent and the nesting read as nothing. Grouping them into one
+    // grid cell fixed the position but still spent a whole card, plus a
+    // checkbox, on something that can never join a batch anyway - a race
+    // folder is exclusive, so ticking it just disables everything else.
+    const companionsFor = (folderId) =>
+      data.connectors.filter((x) => x.companionOf && x.companionOf === folderId);
 
-    for (const group of groups) {
-      const groupEl = document.createElement("div");
-      groupEl.className = "connector-group";
-      for (const connector of group) {
-        if (connector.exclusive && connector.folderId) exclusiveFolders.add(connector.folderId);
-        groupEl.appendChild(buildConnectorCard(project, connector));
-      }
-      connectorGridEl.appendChild(groupEl);
+    // Exclusivity still has to be known for every folder, card or not -
+    // canStartClientSide() reads it whether or not the folder is on screen.
+    for (const c of data.connectors) {
+      if (c.exclusive && c.folderId) exclusiveFolders.add(c.folderId);
+    }
+
+    const placed = new Set(data.connectors.filter((c) => c.companionOf).map((c) => c.companionOf));
+    for (const connector of data.connectors) {
+      // A companion whose parent is absent from this project still gets its
+      // own card rather than being silently unreachable.
+      if (connector.companionOf && placed.has(connector.companionOf)) continue;
+      connectorGridEl.appendChild(
+        buildConnectorCard(project, connector, companionsFor(connector.folderId))
+      );
     }
     connectorGridEl.classList.remove("hidden");
 
@@ -358,7 +356,7 @@
    * breaks keyboard behaviour. The navigation affordance moved to an inner
    * button covering everything except the checkbox.
    */
-  function buildConnectorCard(project, connector) {
+  function buildConnectorCard(project, connector, companions = []) {
     const card = document.createElement("div");
     card.className = "card connector-card" + (connector.hasTests ? "" : " card-disabled");
     if (connector.companionOf) card.classList.add("connector-card-companion");
@@ -398,7 +396,11 @@
 
     const sub = document.createElement("span");
     sub.className = "card-sub";
-    sub.textContent = connector.hasTests ? `${connector.scenarioCount} scenarios` : "No test suite yet";
+    sub.textContent = connector.hasTests
+      ? companions.length
+        ? `${connector.scenarioCount} scenarios · +${companions.length} more suite${companions.length > 1 ? "s" : ""}`
+        : `${connector.scenarioCount} scenarios`
+      : "No test suite yet";
     info.appendChild(sub);
 
     if (connector.exclusive) {
@@ -421,14 +423,104 @@
     info.appendChild(track);
 
     open.appendChild(info);
+
+    // A connector with extra suites gets a chevron, so it is visible BEFORE
+    // clicking that this opens a choice rather than going straight to a run.
+    if (companions.length) {
+      const chev = document.createElement("span");
+      chev.className = "connector-chevron";
+      chev.textContent = "▾";
+      open.appendChild(chev);
+    }
+
     card.appendChild(open);
 
     if (connector.hasTests) {
-      open.addEventListener("click", () => showRunner(project, connector));
+      open.addEventListener("click", (e) => {
+        // Only connectors that actually have a second suite pay the extra
+        // click. Everything else navigates straight through, exactly as
+        // before.
+        if (!companions.length) return showRunner(project, connector);
+        e.stopPropagation(); // the document listener below closes on outside clicks
+        openSuiteMenu(card, project, connector, companions);
+      });
       connectorCards.set(connector.folderId, { card, status, track, fill, connector });
     }
     return card;
   }
+
+  /**
+   * The chooser popped by a connector that has more than one suite.
+   *
+   * Stripe's race folder used to be a card of its own in the grid, which
+   * spent a full card and a checkbox on something that can never join a
+   * batch - a race folder is exclusive, so ticking it only disables
+   * everything else. Reaching it through the connector it exercises says the
+   * relationship better than any amount of indentation did, and gives the
+   * grid back to the connectors that can genuinely run together.
+   */
+  function openSuiteMenu(card, project, connector, companions) {
+    closeSuiteMenu();
+
+    const menu = document.createElement("div");
+    menu.className = "suite-menu";
+
+    const entry = (c, label, note) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "suite-menu-item";
+
+      const icon = document.createElement("span");
+      icon.className = "suite-menu-icon";
+      icon.textContent = c.icon || FALLBACK_CONNECTOR_ICON;
+      b.appendChild(icon);
+
+      const text = document.createElement("span");
+      text.className = "suite-menu-text";
+      const t = document.createElement("span");
+      t.className = "suite-menu-title";
+      t.textContent = label;
+      text.appendChild(t);
+      const s = document.createElement("span");
+      s.className = "suite-menu-sub";
+      s.textContent = note;
+      text.appendChild(s);
+      b.appendChild(text);
+
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeSuiteMenu();
+        showRunner(project, c);
+      });
+      return b;
+    };
+
+    menu.appendChild(entry(connector, `${connector.displayName} tests`, `${connector.scenarioCount} scenarios · the ordinary suite`));
+    for (const c of companions) {
+      menu.appendChild(
+        entry(c, c.displayName, `${c.scenarioCount} scenarios · runs alone, blocks every other connector`)
+      );
+    }
+
+    card.appendChild(menu);
+    card.classList.add("connector-card-open");
+    openMenuCard = card;
+  }
+
+  let openMenuCard = null;
+  function closeSuiteMenu() {
+    if (!openMenuCard) return;
+    const menu = openMenuCard.querySelector(".suite-menu");
+    if (menu) menu.remove();
+    openMenuCard.classList.remove("connector-card-open");
+    openMenuCard = null;
+  }
+  // Dismiss on an outside click or Escape - a popover with no way out but
+  // picking something is a trap.
+  document.addEventListener("click", closeSuiteMenu);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeSuiteMenu();
+  });
 
   /**
    * Repaints one card's live status from folderStates. Called on every step
