@@ -91,16 +91,31 @@ async function discoverAllProjects(apiKey) {
   return projects;
 }
 
-// Per-connector default schema to try first when a catalog exposes more than
-// one - matches the schema names this repo's tests/<connector>/*.js already
-// assume (payment for Stripe, crm for HubSpot). Falls back to whatever
-// listSchemas returns first if the connector isn't in this map or the
-// default isn't present, so an unlisted connector type still resolves to
-// *something* rather than erroring out.
-const DEFAULT_SCHEMA_BY_CONNECTOR = {
-  stripe: "payment",
-  hubspot: "crm",
-};
+const { loadConnectorConfig } = require("./env");
+
+/**
+ * Picks which schema of a catalog to test.
+ *
+ * ORDER MATTERS, and "first one listed" is the last resort rather than the
+ * rule. Measured live: Postgres exposes ten schemas with `auth` first and the
+ * one this suite actually targets (`public`) seventh; MongoDB lists
+ * `database_1` before the `e_commerce` the fixtures use. Taking the first
+ * would run a whole folder against the wrong data and report confusing
+ * failures rather than an honest error.
+ *
+ *   1. whatever the connector's own schemaEnv already names, if the catalog
+ *      really has it - the user has stated their intent in .env, so honour it
+ *   2. a defaultSchema declared in tests/<id>/config.js
+ *   3. the first schema listed, as a guess for a connector that declares
+ *      neither
+ */
+function pickSchema(connectorId, schemaNames) {
+  const config = loadConnectorConfig(connectorId) || {};
+  const fromEnv = config.schemaEnv ? process.env[config.schemaEnv] : null;
+  if (fromEnv && schemaNames.includes(fromEnv)) return fromEnv;
+  if (config.defaultSchema && schemaNames.includes(config.defaultSchema)) return config.defaultSchema;
+  return schemaNames[0] || config.defaultSchema || fromEnv || null;
+}
 
 /**
  * Resolves a picked project + connection down to the catalogId/schemaName
@@ -129,9 +144,13 @@ async function resolveDynamicConnectorConfig({ apiKey, projectId, connectionId, 
 
   const schemasRes = await client.listSchemas(catalog.id);
   const schemas = schemasRes.ok && Array.isArray(schemasRes.body) ? schemasRes.body : [];
-  const schemaNames = schemas.map((s) => (typeof s === "string" ? s : s.name)).filter(Boolean);
-  const preferred = DEFAULT_SCHEMA_BY_CONNECTOR[connectorId];
-  const schemaName = (preferred && schemaNames.includes(preferred) ? preferred : schemaNames[0]) || preferred;
+  // The API returns `schemaName`, not `name` - reading the wrong field made
+  // this list ALWAYS empty, which went unnoticed because Stripe and HubSpot
+  // both had a hardcoded default to fall back on. Every other connector hit
+  // "Could not determine a schema" the moment the picker started offering
+  // them. `name` is kept as a tolerated alternative rather than assumed away.
+  const schemaNames = schemas.map((s) => (typeof s === "string" ? s : s.schemaName || s.name)).filter(Boolean);
+  const schemaName = pickSchema(connectorId, schemaNames);
 
   if (!schemaName) {
     throw new Error("Could not determine a schema for this connection's catalog.");

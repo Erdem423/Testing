@@ -73,6 +73,10 @@ cacheable or gain Stripe's statistics limitation.
 | 31 | Adding a column that already exists returns the **raw PostgreSQL exception** — internal schema name, generated SQL, PL/pgSQL function names and arguments | Low | Open, reported not asserted |
 | 32 | MongoDB's `_id` is **absent from `listColumns` and `SELECT *` entirely**, and the obvious `WHERE _id = '<hex>'` filter is rejected on a type mismatch. A working but undocumented path exists (`CAST(_id AS VARCHAR)` / `objectid('<hex>')`) | Medium | Open, asserted |
 | 33 | `getTableStatistics` is implemented for **Postgres only** — the two-connector pattern ("database connectors get it") breaks on a third; MongoDB gets Stripe's exact `400` | Low | Not a bug; corrects an over-generalization, asserted |
+| 34 | Every Google Ads table carries **synthetic `_q_*` request-parameter columns** (pagination, limit, offset, query settings) mixed into its real data columns — always `NULL`, undistinguished by `listColumns` beyond the naming convention | Low | Not a bug, reported |
+| 35 | The **Google Ads connector is measurably flaky** — the identical query intermittently returns correct data, a clean empty `200`, or an outright `400`, with no pattern found | Medium | Not a deterministic bug; retry-tolerant fixture built around it |
+| 36 | Paginating a Google Ads table by a **low-cardinality column silently overlaps pages** — standard SQL tie-breaking behavior, not a Peaka bug, but an easy trap. `resource_name` columns are the safe, unique choice | Low | Not a bug; test design lesson, asserted with the fix |
+| 37 | **Creating a Google Ads catalog needs OAuth secret/token even on an existing connection** — unlike Postgres/MongoDB, `{name, connectionId}` alone is rejected. Blocks connection-lifecycle and metadata-refresh scenarios | Medium | Access-scoping limitation, not a bug; scenarios scoped around it |
 
 Three endpoint paths in this repo's client were also wrong; see [Corrected endpoint paths](#corrected-endpoint-paths).
 
@@ -1127,6 +1131,272 @@ Not a bug — an unimplemented feature is not a defect — but worth recording p
 Postgres-only shape is easy to mis-generalize from two points and this suite very nearly did. `MO-G`
 asserts the `400` deliberately, as the mirror image of `PG-G`'s `200`, so neither scenario can be "fixed" to
 agree with the other without the change being a real regression or a real improvement.
+
+## Server errors now have their own channel
+
+Separate from a product finding: the instructor's spec states a firm rule (rule 6 of 8) — *a 5xx
+response is always a bug, never an acceptable outcome, even in a negative scenario*. This suite had no way
+to act on that. `helpers/assert.js` made no distinction between a `500` and a `400` at all, and **two
+tests were already passing green while receiving a `500`**, with the only trace a `console.log` that
+reached no report:
+
+- `M`'s schema-wide cache-status step — the known bug in finding 7, tolerated with `[200, 500]`
+- Tier 1's duplicate-`createCache`-mid-sync step — the known bug in finding 4, status logged, never
+  asserted
+
+Both are genuine Peaka bugs, already documented above, and outside this suite's control — making them
+permanently fail would just train everyone to ignore red in this suite, which is how a real regression
+would eventually hide. Both still pass. What changed is that every 5xx anywhere in the suite is now
+recorded with its scenario, step, and (where tolerated) the rationale, surfaced in a terminal banner, in
+`test-results/coverage.json`, and in the dashboard as a distinct state — visually separate from both a
+clean pass and a failure. See `helpers/serverError.js`.
+
+## Verified working: cache refresh does pick up source changes
+
+Not a bug — a question that had never been answered, and worth recording because the answer was genuinely
+uncertain before it was measured. `M` proves the refresh endpoints *respond* correctly, but a refresh that
+returned `200` and silently fetched nothing new would have passed every assertion in it.
+
+Scenario `O` adds a real customer to Stripe and watches what the cache does. Measured 2026-08-03:
+
+| Step | Result |
+|---|---|
+| Before any refresh | The new customer is **not** visible — confirming the query reads the cached snapshot, without which the rest proves nothing |
+| After `triggerIncrementalUpdate` | **Visible.** Incremental sync *does* detect inserts — the open question going in |
+| Row count | Rose by exactly one, so the refresh reconciles rather than duplicating |
+| After deleting upstream + full refresh | Removal reflected, count back to baseline |
+
+Both directions work. The scenario still tries incremental first and falls back to a full refresh, and
+reports which one succeeded rather than asserting it — if a future connector version stops detecting
+inserts incrementally, that surfaces as a logged difference rather than a red test, and this table is
+what it should be compared against.
+
+### Incremental really is incremental — and it handles all three change types
+
+Extended 2026-08-04 to cover updates and deletes, and to read the `progress` counters, which nothing had
+ever done with real data. The only previous look was at `transfers`, a **0-row** table, where every
+counter is trivially zero and therefore says nothing.
+
+Measured against a 505-row `customers` table:
+
+| Sync | `cachedRecords` | `inserted` | `updated` | `deleted` | Change visible? |
+|---|---|---|---|---|---|
+| Initial | 707 | 505 | 202 | 0 | — |
+| After one INSERT | **3** | **1** | 2 | 0 | yes |
+| After one UPDATE | 2 | 0 | 2 | 0 | **yes** |
+| After one DELETE | 2 | 0 | 2 | **0** | **yes** |
+
+**Incremental is genuinely a delta sync** — 3 records processed against a 505-row table, not a quiet full
+re-copy. And it reflects **updates and deletes**, not just inserts, which contradicts the reasonable
+prior expectation that a watermark-based sync would miss deletions.
+
+**But the counters are only partly trustworthy:**
+
+- `numberOfInsertedRecords` is accurate — exactly `1` for one inserted row. Asserted.
+- `numberOfUpdatedRecords` reports `2` on every incremental, whether or not anything changed. It appears
+  to be fixed overhead rather than a count of the caller's changes.
+- **`numberOfDeletedRecords` stays `0` while the sync demonstrably removes the row** — the cached count
+  drops back to baseline and the row disappears from queries, in the very sync that reports zero
+  deletions. The deletion counter does not reflect deletions.
+
+The last one is reported by the test rather than asserted. Asserting `1` would assert a bug is fixed;
+asserting `0` would institutionalise it. Anyone relying on these counters to drive alerting or
+reconciliation should know only the insert count can be trusted.
+
+`lastOffset` also stayed unchanged across all four syncs, which is worth knowing before treating it as a
+progress watermark.
+
+**Report upstream as:** an incremental cache update that deletes rows reports `numberOfDeletedRecords: 0`,
+and `numberOfUpdatedRecords` appears to be a constant rather than a count.
+
+---
+
+## Corrected endpoint paths
+
+Seven paths in `helpers/peakaClient.js` were once marked "best-effort / inferred from REST convention",
+because `docs.peaka.com` blocked deep-fetching those individual pages. The full endpoint index at
+[`docs.peaka.com/llms.txt`](https://docs.peaka.com/llms.txt) works where individual page fetches did
+not — use it to verify a new endpoint.
+
+That check found **three genuinely wrong paths**:
+
+| Method | Was | Now |
+|---|---|---|
+| `triggerIncrementalUpdate` | `/cache/{id}/incremental` | `/cache/{id}/incrementalUpdate` |
+| `triggerFullRefresh` | `/cache/{id}/full-refresh` | `/cache/{id}/fullRefreshUpdate` |
+| `cancelFullRefresh` | `/cache/{id}/full-refresh/cancel` | `/cache/{id}/cancelFullRefreshUpdate` |
+
+They had never failed visibly because no test called them at the time. The other four
+(`getCatalog`, `deleteCache`, `deleteConnection`, `deleteCatalog`) turned out to be exactly right.
+
+Verified against the live API rather than only the docs, by calling each with a syntactically valid but
+non-existent `cacheId` so nothing real was refreshed or cancelled. The distinction is clear-cut: the
+**old** paths return the generic framework "no route" `404` (byte-identical in shape to a deliberately
+nonsense control path), while the **corrected** paths return real application-level handler errors that
+actually looked the cache up.
+
+A third docs-vs-behaviour divergence turned up in the process: for a non-existent cache,
+`incrementalUpdate` and `fullRefreshUpdate` return **`400 WrongRequestException` "Cache settings not
+found"**, not the documented `404`. (`cancelFullRefreshUpdate` does return a proper `404`.)
+
+---
+
+## Bugs in this test suite worth learning from
+
+Two of these were more instructive than the product findings, because both produced **green tests that
+proved nothing**.
+
+### The execution records are two slots, not a fallback chain
+
+Two helpers had independently written the same line:
+
+```js
+lastIncrementalCacheExecution || lastFullRefreshCacheExecution
+```
+
+Those are independent slots. Once an incremental update has run, its record stays populated **forever**,
+so `||` returns it for the rest of the cache's life and every subsequent full refresh is invisible
+behind it. Measured 1.5s into a full refresh:
+
+| Field | Value |
+|---|---|
+| Top-level `status` | `RUNNING` |
+| `lastIncrementalCacheExecution` | `COMPLETED` ← stale, from the previous incremental |
+| `lastFullRefreshCacheExecution` | `RUNNING` ← the operation actually in flight |
+
+So every "wait for the cache to finish" returned **on its first poll**, having read the wrong record.
+
+**How it surfaced.** `M`'s full-refresh cancel step was rewritten to settle the cache first and then
+assert an exact `404`. It returned `200`. The obvious reading — and the one first written into the
+documentation — was that `cancelIncrementalUpdate` and `cancelFullRefresh` disagree about an idle cache.
+They do not. The settle had returned instantly, so the cancel hit a refresh that was still running; a
+real cancel really does return `200`. Both endpoints return `404` on a genuinely idle cache.
+
+Both helpers now read the **most recent** record by `createdAt`, and "settled" additionally requires the
+top-level status to be terminal — which closes the ~300ms after `triggerFullRefresh` where the new
+record does not exist yet. The logic lives in `helpers/cacheExecution.js` so there is one copy to be
+wrong, not two.
+
+### A race test that passed without ever racing
+
+The Tier 1 step that cancels a running materialized refresh reported `entered window: false,
+status at fire: COMPLETED` on every run — it was silently testing the idle path the main suite already
+covers. Cause: the status endpoint serves the *previous* terminal status until the new run starts, so
+the poll gave up before the refresh had begun. It now ignores every status until
+`lastExecutionStartTime` moves.
+
+The broken and fixed versions both **passed**. The only difference was in the logged window telemetry,
+which is why the canary step and the `entered window` logging exist at all.
+
+### The common lesson
+
+Both were exposed by pinning an assertion to a single expected value. While the cancel steps hedged on
+`[200, 404]` they were green whichever answer came back, so a broken wait stayed invisible for as long
+as the steps existed. **The hedge was not tolerating non-determinism — it was hiding a bug.**
+
+---
+
+## Race results
+
+The deliberate concurrency tests (`npm run test:races`) and their per-tier outcome tables live in
+[`CONCURRENCY-SPEC.md`](CONCURRENCY-SPEC.md), together with the reasoning for why they assert
+invariants rather than expected values.
+## 34. Every Google Ads table carries synthetic `_q_*` request-parameter columns alongside its real data
+
+Found building the fourth connector folder (`tests/google-ads/`, project `uLgI0O4j`, catalog `gads`).
+`listColumns` on `ad_group_criterion` (97 columns) and `keyword_stats_report` (32 columns) both include a
+set of columns prefixed `_q_`: `_q_pagination_anchor`, `_q_customer_id`, `_q_limit`, `_q_offset`,
+`_q_query`, `_q_search_settings`, `_q_validate_only`, `_q_page_size`, and (on report tables only)
+`_q_segment_start_date`/`_q_segment_end_date`.
+
+These are GAQL (Google Ads Query Language) *request* parameters — the knobs you'd set when asking Google
+Ads for data — not response data. Selecting any of them returns `NULL` on every row, confirmed on both
+tables. Every one of the 150+ tables in this catalog carries the same set, since GAQL itself works this way
+underneath Peaka's SQL translation.
+
+Not a bug — nothing is broken, and the `_q_` prefix does make them distinguishable from real columns by
+convention. But `listColumns` does not flag them as anything other than ordinary columns (no `internal`
+flag, no separate category), so a caller doing `SELECT *` or iterating `listColumns` naively gets eight-plus
+always-null noise columns mixed into every result, with only the naming convention to tell them apart.
+Reported, not asserted — GA-A logs the count found rather than asserting on it, since asserting an exact
+count would tie the scenario to a Peaka/Google Ads schema detail rather than to anything worth a pass/fail.
+
+## 35. The Google Ads connector is measurably flaky under repeated querying
+
+Found while building GA-A. The *identical* query (`SELECT customer_id, clicks FROM keyword_stats_report
+LIMIT 2`), repeated back-to-back against the same table with no changes, produced three different outcomes
+across roughly 15 attempts made while probing this connector:
+
+- **Most attempts**: `200`, correct data.
+- **One attempt**: `200`, but `data: []` — a clean success envelope carrying zero rows, even though
+  `COUNT(*)` on the same table simultaneously reported real rows present.
+- **One attempt**: an outright `400`.
+
+No pattern emerged across column selection, `ORDER BY` presence, `LIMIT` vs. no `LIMIT`, `OFFSET`, or which
+table — every variant tried eventually both succeeded and failed on different attempts. This is the same
+family of problem already on record for exports (*"exports fail intermittently in this API with no race
+involved"*) — live-API flakiness, most plausibly on Google's own Ads API or Peaka's proxy layer to it,
+rather than a deterministic bug in Peaka's SQL translation.
+
+Not asserted as a defect, for the same reason exports aren't: a single failure proves nothing about a
+specific input, only about that specific attempt. `tests/google-ads/fixture.js` builds retry tolerance into
+every row-fetching helper (`withRetry`, 3 attempts, 2s apart, accepting the first non-empty result) rather
+than trusting any single query — the same posture this suite already takes toward Stripe/internal-table
+exports, extended to a connector where the *whole read path*, not just async jobs, turns out to need it.
+
+## 36. Pagination over a low-cardinality Google Ads column silently returns overlapping pages
+
+Found building `GA-F` (error handling & pagination). The scenario's first attempt ordered
+`ad_group_criterion` by `ad_group_criterion_ad_group` — a foreign key to the owning ad group — and paged it
+with `OFFSET 140 LIMIT 20` / `OFFSET 160 LIMIT 20`. The two pages **overlapped completely**: 20 of 20 rows
+identical between them, despite non-overlapping offsets.
+
+Measured why rather than assumed: `COUNT(DISTINCT ad_group_criterion_ad_group)` is **29** across the
+table's 2,860 rows. `ORDER BY` over a column that coarse has enormous ties, and SQL never guarantees a
+stable order among tied rows unless the query also sorts on something that breaks the tie — so which rows
+land on which page becomes implementation-defined, and paging through it can revisit or skip rows
+silently, with no error to signal it.
+
+**Not a Peaka bug.** This is standard SQL behavior working exactly as specified — `ORDER BY` without a
+unique tiebreaker never promised stable pagination, in Trino or anywhere else. It is, however, an easy trap
+for anyone paginating Google Ads data through Peaka without realizing it: `ad_group_criterion` alone has
+several low-cardinality columns that look plausible to sort by (`ad_group_criterion_status`,
+`ad_group_criterion_type`, `ad_group_criterion_approval_status`) and would reproduce the same silent
+overlap.
+
+The fix, and what `GA-F` now orders by instead: Google Ads' own convention. Every resource type carries a
+`resource_name` field Google documents as that resource's stable, globally unique identifier. Confirmed
+live — `ad_group_criterion_resource_name` is 2,860-of-2,860 distinct — and a column with that property is
+the only kind safe to paginate over without ties. Worth knowing before writing any query against this
+connector that pages through results: prefer a `*_resource_name` column, or explicitly add one as a
+tiebreaker, rather than the first plausible-looking column.
+
+## 37. Creating a Google Ads catalog needs OAuth credentials even on an existing connection
+
+Found while scoping `GA-G` (catalog endpoints). Postgres and MongoDB both let a scenario create a
+throwaway catalog on an *existing* connection with nothing but `{ name, connectionId }` — no database
+password, no connection string, just the id (see `tests/postgres/pg-g-catalogs.js`,
+`tests/mongodb/mo-g-catalogs.js`). The same call against the Google Ads connection (`gads`,
+`e068f1d2-1e6e-433f-abaa-1f3f87819570`) fails:
+
+```
+POST /catalogs { name: "...", connectionId: "e068f1d2-..." }
+-> 400 {"errorCode":100,"message":"Fields [customerUnderscoreSecret, secret, token] are required for
+type with serial name 'GOOGLE_ADS', but they were missing"}
+```
+
+Peaka wants the OAuth client secret and refresh token re-supplied at catalog-creation time, even though
+the connection they belong to already exists and already works for every read this suite performs against
+it (`GA-A`, `GA-C`, `GA-D`, `GA-F`, `GA-H` all query the *existing* catalog fine). Reusing a connection is
+enough to query through it, but not enough to mint a new catalog on it — an asymmetry Postgres and MongoDB
+don't have.
+
+Practical consequence: `GA-G` is scoped down to the two assertions that don't need a throwaway catalog
+(search, table statistics), and no `GA-I` (metadata refresh) or `GA-E` (connection lifecycle) exist at all
+— both would need a throwaway catalog or a connection built from scratch, and both need the same OAuth
+secret/token this suite was never given. Not a bug — an access-scoping decision on Peaka's part — but worth
+recording so a future attempt to add those scenarios doesn't waste time assuming `connectionId` alone will
+work here the way it does for Postgres and MongoDB.
 
 ## Server errors now have their own channel
 

@@ -141,6 +141,45 @@ function assertNoServerError(response, label, { message = null } = {}) {
   throw err;
 }
 
+/**
+ * Deletes only sidecar files whose pid is no longer a live process - never a
+ * blind wipe of the whole directory.
+ *
+ * The dashboard can now run several connectors CONCURRENTLY, each in its own
+ * forked child with its own pid file here. Clearing the whole directory when a
+ * run starts - which is what server.js used to do - would delete the records a
+ * sibling run had already written and was still writing to. A pid that is
+ * still alive belongs to an active dashboard run or an active `npm test`
+ * worker, so it stays; anything whose process is gone is left over from a run
+ * that already finished or crashed, and is safe to clear.
+ */
+function reapStaleServerErrorFiles() {
+  let entries;
+  try {
+    entries = fs.readdirSync(SIDECAR_DIR);
+  } catch (_) {
+    return; // directory doesn't exist yet - nothing to reap
+  }
+  for (const name of entries) {
+    const match = /^(\d+)\.jsonl$/.exec(name);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    let alive = true;
+    try {
+      process.kill(pid, 0); // signal 0 tests for existence without actually signalling
+    } catch (err) {
+      alive = err.code === "EPERM"; // exists but owned by another user - leave it alone
+    }
+    if (!alive) {
+      try {
+        fs.unlinkSync(path.join(SIDECAR_DIR, name));
+      } catch (_) {
+        // Best-effort - a stale file left behind is a reporting nuisance, not a failure.
+      }
+    }
+  }
+}
+
 module.exports = {
   recordServerError,
   warnOnServerError,
@@ -148,4 +187,5 @@ module.exports = {
   isServerError,
   truncate,
   SIDECAR_DIR,
+  reapStaleServerErrorFiles,
 };

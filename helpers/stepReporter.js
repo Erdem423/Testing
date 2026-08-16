@@ -3,17 +3,15 @@ const { AsyncLocalStorage } = require("async_hooks");
 /**
  * Live per-step reporting channel.
  *
- * WHY HTTP AND NOT THE SHARED EVENT BUS
- * jest/reporterBus.js works for jest/browserReporter.js because Jest loads
- * reporters itself, in the host process, through plain Node require - so the
- * reporter and server.js genuinely share one module instance.
- *
- * Test files do NOT get that. Everything a test requires goes through
- * jest-runtime's own sandboxed module registry, so `require("../reporterBus")`
- * from inside a test returns a DIFFERENT EventEmitter that server.js never
- * sees. And since scenarios G-N each live in their own file, Jest may run them
- * in separate worker *processes* as well, where sharing a module instance is
- * impossible by construction.
+ * WHY HTTP AND NOT A SHARED EVENT BUS
+ * An in-process EventEmitter cannot reach server.js from here. Everything a
+ * test requires goes through jest-runtime's own sandboxed module registry, so
+ * requiring a shared module from inside a test returns a DIFFERENT instance
+ * than the server holds. Since scenarios G-N each live in their own file,
+ * Jest may also run them in separate worker *processes*, where sharing a
+ * module instance is impossible by construction - and the whole Jest run now
+ * lives in a forked child anyway (see jest/runInChild.js), so even the
+ * reporter no longer shares memory with the server.
  *
  * A localhost HTTP callback sidesteps both problems: server.js sets
  * PEAKA_STEP_REPORT_URL before invoking Jest, and this module POSTs each step

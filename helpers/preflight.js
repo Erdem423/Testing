@@ -498,6 +498,115 @@ async function measurePeakaTables() {
   };
 }
 
+// A short curated list, not a scan of MAX_TABLES_TO_PROBE - this catalog has
+// 150+ tables (the full Google Ads Query Language resource schema, present
+// regardless of whether the account has data), and most are legitimately
+// empty for an account this size. Scanning all of them would waste calls
+// against a connector already measured to be intermittently flaky - see
+// tests/google-ads/fixture.js for the measurement and the retry reasoning
+// this mirrors.
+const GOOGLE_ADS_CANDIDATES = [
+  "keyword_stats_report",
+  "ad_group_criterion",
+  "ad_stats_report",
+  "campaign_stats_report",
+  "ad_group_stats_report",
+  "asset",
+];
+const GOOGLE_ADS_RETRY_ATTEMPTS = 3;
+const GOOGLE_ADS_RETRY_DELAY_MS = 2000;
+
+async function countRowsRetrying(client, catalogName, schemaName, tableName) {
+  for (let attempt = 1; attempt <= GOOGLE_ADS_RETRY_ATTEMPTS; attempt++) {
+    const res = await client.executeQuery(
+      { statement: `SELECT COUNT(*) AS cnt FROM "${catalogName}"."${schemaName}"."${tableName}"` },
+      "SIMPLE"
+    );
+    if (res.ok && res.body && Array.isArray(res.body.data) && res.body.data.length > 0) {
+      return Number(res.body.data[0].cnt);
+    }
+    if (attempt < GOOGLE_ADS_RETRY_ATTEMPTS) await new Promise((r) => setTimeout(r, GOOGLE_ADS_RETRY_DELAY_MS));
+  }
+  return -1; // every attempt came back empty - treat as "not this table" rather than aborting the whole preflight
+}
+
+/**
+ * A FOURTH connector, and the first outside the main Peaka project - see
+ * tests/google-ads/config.js for the apiKeyEnv/projectIdEnv mechanism this
+ * relies on. checkCredentials("google-ads") already normalises onto
+ * PEAKA_API_KEY/PEAKA_PROJECT_ID, so this function needs no special-casing
+ * beyond that - PeakaClient is built exactly like every other connector's.
+ */
+async function measureGoogleAds() {
+  const check = checkCredentials("google-ads");
+  if (!check.ok) {
+    const reason = "Google Ads connector not configured (missing PEAKA_GOOGLE_ADS_*/_ADS credentials in .env)";
+    return {
+      configured: false,
+      gates: { anyTable: unavailable(reason), largeTable: unavailable(reason), connectionId: unavailable(reason) },
+    };
+  }
+
+  const client = new PeakaClient({
+    apiKey: check.values.PEAKA_API_KEY,
+    projectId: check.values.PEAKA_PROJECT_ID,
+  });
+  const catalogId = check.values.PEAKA_GOOGLE_ADS_CATALOG_ID;
+  const schemaName = check.values.PEAKA_GOOGLE_ADS_SCHEMA_NAME;
+
+  const connectionIdGate = process.env.PEAKA_GOOGLE_ADS_CONNECTION_ID
+    ? open()
+    : unavailable(
+        "PEAKA_GOOGLE_ADS_CONNECTION_ID is not set - these scenarios create a catalog on an existing " +
+          "connection, so they need its id (not OAuth credentials)"
+      );
+
+  const catRes = await client.getCatalog(catalogId);
+  if (!catRes.ok || !catRes.body || !catRes.body.name) {
+    if (catRes.status >= 500) {
+      throw new Error(
+        `Preflight could not reach Peaka to resolve PEAKA_GOOGLE_ADS_CATALOG_ID=${catalogId} ` +
+          `(getCatalog returned ${catRes.status}). Aborting rather than reporting "no data".`
+      );
+    }
+    const reason = `Google Ads catalog '${catalogId}' not found (getCatalog returned ${catRes.status})`;
+    return {
+      configured: false,
+      gates: { anyTable: unavailable(reason), largeTable: unavailable(reason), connectionId: connectionIdGate },
+    };
+  }
+  const catalogName = catRes.body.name;
+
+  let largest = null;
+  let largestCount = -1;
+  for (const table of GOOGLE_ADS_CANDIDATES) {
+    const count = await countRowsRetrying(client, catalogName, schemaName, table);
+    if (count > largestCount) {
+      largestCount = count;
+      largest = table;
+    }
+  }
+
+  return {
+    configured: true,
+    catalogName,
+    schemaName,
+    largestTable: largest,
+    largestTableRowCount: largestCount,
+    gates: {
+      anyTable: largestCount >= 0 ? open() : unavailable(`none of the candidate tables returned usable data`),
+      largeTable:
+        largestCount > CAP_PROBE_MIN_ROWS
+          ? open()
+          : unavailable(
+              `no candidate table exceeds ${CAP_PROBE_MIN_ROWS} rows (largest is '${largest}' with ` +
+                `${largestCount}), so the row-cap claim is untestable`
+            ),
+      connectionId: connectionIdGate,
+    },
+  };
+}
+
 async function measure() {
   loadDotEnv();
   const report = {
@@ -505,6 +614,7 @@ async function measure() {
     stripe: await measureStripe(),
     postgres: await measurePostgres(),
     mongodb: await measureMongoDB(),
+    googleAds: await measureGoogleAds(),
     peakaTables: await measurePeakaTables(),
   };
 

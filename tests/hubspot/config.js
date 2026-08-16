@@ -14,6 +14,17 @@
  * requireCredentials("hubspot"), rather than that being expressed here.
  */
 module.exports = {
+  // "hubspot" matches this folder's name, so the picker already found it -
+  // declared explicitly for the same reason as the others (see
+  // tests/postgres/config.js). Not measured live here: no HubSpot catalog
+  // was available in the project this was checked against, so this preserves
+  // exactly the behaviour that was already working rather than guessing at a
+  // different value.
+  catalogTypes: ["hubspot"],
+  // Fallback when PEAKA_*_SCHEMA_NAME is unset - the dashboard resolves a
+  // picked connection to a schema, and "first one listed" is wrong for
+  // several connectors. See helpers/peakaAccount.js's pickSchema().
+  defaultSchema: "crm",
   requiredEnv: ["PEAKA_HUBSPOT_CATALOG_ID", "PEAKA_HUBSPOT_SCHEMA_NAME"],
 
   catalogIdEnv: "PEAKA_HUBSPOT_CATALOG_ID",

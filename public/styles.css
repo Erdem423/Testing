@@ -986,3 +986,197 @@ body {
   margin-right: 7px;
   box-shadow: 0 0 0 3px var(--pass-bg);
 }
+
+/* ---------- Project view: multi-select connector runs ---------- */
+
+.project-run-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.project-running-note {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* The card is a container now, not a button - it holds a checkbox, and
+   nesting a control inside a button is invalid. `.connector-open` is the
+   part that still behaves like one. */
+.connector-card {
+  align-items: stretch;
+  padding: 0;
+  cursor: default;
+  position: relative; /* anchors the suite chooser popover */
+}
+.connector-card:hover { transform: none; }
+
+.connector-check {
+  margin: 18px 0 18px 18px;
+  align-self: flex-start;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.connector-check:disabled { cursor: default; }
+
+.connector-open {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1;
+  min-width: 0;
+  padding: 18px;
+  background: none;
+  border: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.connector-open:disabled { cursor: default; }
+
+/* A connector with more than one suite pops a chooser instead of navigating
+   straight through - see openSuiteMenu(). The chevron says so before the
+   click. */
+/* Deliberately prominent: this is the only thing distinguishing a card that
+   opens a choice from one that runs straight through, so a faint 11px glyph
+   was not carrying it. Sits in its own tinted disc, sized like the card icon
+   opposite it. */
+.connector-chevron {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  align-self: center;
+  flex-shrink: 0;
+  transition: transform 0.16s ease, background 0.12s ease;
+}
+.connector-open:hover .connector-chevron { background: var(--accent-soft-border); }
+.connector-card-open .connector-chevron { transform: rotate(180deg); }
+.connector-card-open {
+  border-color: var(--accent-soft-border);
+  box-shadow: var(--shadow-md);
+}
+
+/* Keeps a chooser card's icon lined up with the checkboxed cards next to it. */
+.connector-check-spacer {
+  width: 13px;
+  min-width: 13px;
+  margin: 18px 0 18px 18px;
+  flex-shrink: 0;
+}
+
+.suite-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  gap: 2px;
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+
+/* A row is a checkbox (include this suite in the next batch) plus a button
+   (open just this suite). Two affordances, because one card stands for
+   several suites and the choice has to be made per suite. */
+.suite-menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-radius: var(--radius-sm);
+}
+.suite-menu-item:hover { background: var(--hover-bg); }
+
+.suite-menu-check {
+  margin: 11px 0 0 10px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.suite-menu-check:disabled { cursor: default; }
+
+.suite-menu-open {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  padding: 9px 10px 9px 0;
+  background: none;
+  border: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.suite-menu-icon { font-size: 15px; line-height: 1.2; flex-shrink: 0; }
+
+.suite-menu-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.suite-menu-title { font-size: 12.5px; font-weight: 600; color: var(--text-strong); }
+.suite-menu-sub { font-size: 11px; color: var(--text-dim); line-height: 1.3; }
+
+/* Ticked something that cannot run alongside this one. */
+.card-blocked { opacity: 0.5; }
+
+/* Connector names wrap rather than truncate. The shared .card-title clips
+   with an ellipsis, which turned "Concurrency Races" into "Concurrency ..."
+   once nesting narrowed the card - a name you cannot read is worse than one
+   that takes two lines. */
+.connector-card .card-title {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.25;
+}
+
+.card-note {
+  font-size: 11px;
+  color: var(--text-dimmer);
+  font-style: italic;
+  line-height: 1.3;
+  margin-top: 1px;
+}
+
+/* Says a chooser card has suites ticked, since its checkboxes only exist
+   while the chooser is open - otherwise "Run selected (n)" would move with
+   nothing on screen accounting for it. */
+.card-picked {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-top: 2px;
+}
+.card-picked-on { border-color: var(--accent-soft-border); }
+
+.card-status {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.card-status-running { color: var(--running-dark); }
+.card-status-fail { color: var(--fail-fg); }
+
+/* Reuses the runner's own progress bar (.step-progress-track/fill above),
+   just narrower inside a card. */
+.connector-card .step-progress-track { margin-top: 6px; }

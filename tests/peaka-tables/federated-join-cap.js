@@ -98,7 +98,10 @@ async function runPtFederatedJoin(ctx) {
     // for a dependency only this scenario has.
     ctx.catalogId = ctx.catalogId || process.env.PEAKA_CATALOG_ID;
     ctx.catalogNameFromConfig = ctx.catalogNameFromConfig || process.env.PEAKA_CATALOG_NAME;
-    await resolveCatalogName(ctx);
+    // Says out loud that this resolves STRIPE's catalog, not this folder's.
+    // Without it the helper defaults to ctx.connectorId ("peaka-tables") and
+    // asserts a catalog type that cannot exist - see resolveCatalogName().
+    await resolveCatalogName(ctx, { expectedCatalogType: "stripe" });
     stripeCatalog = ctx.catalogName;
     assert(stripeCatalog, "Could not resolve the Stripe catalog's SQL name");
 

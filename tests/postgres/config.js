@@ -29,6 +29,17 @@
  */
 module.exports = {
   // Only ids, no secrets. See the note above about why no credentials here.
+  // Peaka's own catalogType for this connector, which is NOT this folder's
+  // name - measured live against the API, it is "peaka_postgres". The
+  // dashboard's connector picker maps real catalogs onto test folders with
+  // this. It used to assume catalogType === folder id, which is true by
+  // coincidence for Stripe and HubSpot and false here, so a perfectly good
+  // Postgres connection was listed as "No test suite yet".
+  catalogTypes: ["peaka_postgres"],
+  // Fallback when PEAKA_*_SCHEMA_NAME is unset - the dashboard resolves a
+  // picked connection to a schema, and "first one listed" is wrong for
+  // several connectors. See helpers/peakaAccount.js's pickSchema().
+  defaultSchema: "public",
   requiredEnv: ["PEAKA_PG_CATALOG_ID", "PEAKA_PG_SCHEMA_NAME"],
 
   catalogIdEnv: "PEAKA_PG_CATALOG_ID",
