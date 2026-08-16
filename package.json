@@ -22,8 +22,5 @@
   },
   "dependencies": {
     "express": "^5.2.1"
-  },
-  "allowScripts": {
-    "unrs-resolver@1.12.2": true
   }
 }
