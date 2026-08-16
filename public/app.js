@@ -315,10 +315,12 @@
     }
     connectorGridEl.classList.remove("hidden");
 
-    // Scenario lists for every runnable connector, so a batch can start
-    // without a round trip per card and the cards can show totals.
+    // Scenario lists for every runnable suite - companions included, since
+    // they are launchable from a chooser without ever having a card - so a
+    // batch can start without a round trip each and the cards can show
+    // totals.
     await Promise.all(
-      ordered.filter((c) => c.hasTests).map((c) => ensureFolderState({
+      data.connectors.filter((c) => c.hasTests).map((c) => ensureFolderState({
         id: c.folderId,
         displayName: c.displayName,
         icon: c.icon,
@@ -326,13 +328,17 @@
       }))
     );
 
-    // Drop selections for anything this project cannot actually offer a
-    // checkbox for - a different project, or a connector that has since
-    // gained a chooser. Left behind, a stale id would count towards
-    // "Run selected (n)" with no visible box to untick it.
+    // Drop selections this project cannot offer at all - typically left over
+    // from a different project. Kept against every suite a card can launch,
+    // not just folders with a card of their own: a chooser's suites are
+    // selectable through it, and their checkboxes only exist while it is
+    // open, so keying off a visible checkbox would silently discard them.
+    const selectable = new Set();
+    for (const entry of connectorCards.values()) {
+      for (const id of entry.suiteIds || []) selectable.add(id);
+    }
     for (const id of [...selectedConnectorIds]) {
-      const entry = connectorCards.get(id);
-      if (!entry || !entry.card.querySelector(".connector-check")) selectedConnectorIds.delete(id);
+      if (!selectable.has(id)) selectedConnectorIds.delete(id);
     }
 
     // Resync against the server so the cards reflect runs this page did not
@@ -371,14 +377,10 @@
     if (connector.companionOf) card.classList.add("connector-card-companion");
     card.dataset.folderId = connector.folderId || "";
 
-    // No checkbox on a connector that offers a choice of suites. Ticking it
-    // would be ambiguous - the card stands for two suites, and the box could
-    // only ever mean one of them - so the choice is made in the chooser
-    // instead, and the batch selection stays unambiguous.
-    //
-    // The cost, stated plainly: a connector with a chooser cannot join a
-    // multi-connector batch run. Give it its own checkbox back (drop the
-    // `&& !companions.length`) if that trade stops being worth it.
+    // No checkbox on a connector that offers a choice of suites - a single
+    // box on a card standing for two suites could only ever have meant one of
+    // them, without saying which. Its suites each get their own checkbox
+    // inside the chooser instead, so both stay selectable AND unambiguous.
     if (connector.hasTests && !companions.length) {
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
@@ -432,6 +434,13 @@
       info.appendChild(note);
     }
 
+    // How many of this card's suites are ticked. Without it, selecting inside
+    // the chooser and closing it would move "Run selected (n)" with nothing
+    // on screen accounting for the change.
+    const picked = document.createElement("span");
+    picked.className = "card-picked hidden";
+    info.appendChild(picked);
+
     // Live status, filled by refreshCardFor() from this folder's own state.
     const status = document.createElement("span");
     status.className = "card-status hidden";
@@ -466,7 +475,18 @@
         e.stopPropagation(); // the document listener below closes on outside clicks
         openSuiteMenu(card, project, connector, companions);
       });
-      connectorCards.set(connector.folderId, { card, status, track, fill, connector });
+      connectorCards.set(connector.folderId, {
+        card,
+        status,
+        track,
+        fill,
+        picked,
+        connector,
+        companions,
+        // Every folder this card can launch - itself plus its companions.
+        // updateProjectRunControls() counts selections against this.
+        suiteIds: [connector.folderId, ...companions.map((c) => c.folderId)],
+      });
     }
     return card;
   }
@@ -487,15 +507,35 @@
     const menu = document.createElement("div");
     menu.className = "suite-menu";
 
+    // Each suite carries BOTH affordances: a checkbox to include it in the
+    // next batch, and the rest of the row to open it on its own. One card
+    // stands for several suites, so the choice of which one has to be made
+    // here rather than on the card.
     const entry = (c, label, note) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "suite-menu-item";
+      const row = document.createElement("div");
+      row.className = "suite-menu-item";
+      row.dataset.folderId = c.folderId;
+
+      const check = document.createElement("input");
+      check.type = "checkbox";
+      check.className = "suite-menu-check";
+      check.checked = selectedConnectorIds.has(c.folderId);
+      check.addEventListener("click", (e) => e.stopPropagation()); // ticking must not navigate
+      check.addEventListener("change", () => {
+        if (check.checked) selectedConnectorIds.add(c.folderId);
+        else selectedConnectorIds.delete(c.folderId);
+        updateProjectRunControls();
+      });
+      row.appendChild(check);
+
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "suite-menu-open";
 
       const icon = document.createElement("span");
       icon.className = "suite-menu-icon";
       icon.textContent = c.icon || FALLBACK_CONNECTOR_ICON;
-      b.appendChild(icon);
+      open.appendChild(icon);
 
       const text = document.createElement("span");
       text.className = "suite-menu-text";
@@ -507,14 +547,15 @@
       s.className = "suite-menu-sub";
       s.textContent = note;
       text.appendChild(s);
-      b.appendChild(text);
+      open.appendChild(text);
 
-      b.addEventListener("click", (e) => {
+      open.addEventListener("click", (e) => {
         e.stopPropagation();
         closeSuiteMenu();
         showRunner(project, c);
       });
-      return b;
+      row.appendChild(open);
+      return row;
     };
 
     menu.appendChild(entry(connector, `${connector.displayName} tests`, `${connector.scenarioCount} scenarios · the ordinary suite`));
@@ -527,6 +568,7 @@
     card.appendChild(menu);
     card.classList.add("connector-card-open");
     openMenuCard = card;
+    updateProjectRunControls(); // applies exclusivity to the boxes just built
   }
 
   let openMenuCard = null;
@@ -602,20 +644,51 @@
     const exclusivePicked = [...selectedConnectorIds].some((id) => isExclusiveFolder(id));
     const anyNonExclusivePicked = [...selectedConnectorIds].some((id) => !isExclusiveFolder(id));
 
-    for (const [folderId, entry] of connectorCards) {
-      // Every card gets its live status refreshed, including the ones with no
-      // checkbox - a connector reached through a chooser still runs, and its
-      // card still has to show that.
-      refreshCardFor(folderId);
-
-      const checkbox = entry.card.querySelector(".connector-check");
-      if (!checkbox) continue;
+    // One rule, applied wherever a suite can be ticked - on a card, or on a
+    // row inside an open chooser.
+    const applyTo = (checkbox, folderId) => {
       checkbox.checked = selectedConnectorIds.has(folderId);
       const blockedByExclusive = isExclusiveFolder(folderId)
         ? anyNonExclusivePicked
         : exclusivePicked;
       checkbox.disabled = blockedByExclusive || !canStartClientSide(folderId);
-      entry.card.classList.toggle("card-blocked", checkbox.disabled && !checkbox.checked);
+      return checkbox.disabled;
+    };
+
+    for (const [folderId, entry] of connectorCards) {
+      // Every card gets its live status refreshed, including the ones whose
+      // checkbox lives in a chooser - a connector reached that way still
+      // runs, and its card still has to show that.
+      refreshCardFor(folderId);
+
+      // How many of this card's suites are ticked, so a selection made
+      // inside a chooser is still visible once it closes.
+      const pickedIds = (entry.suiteIds || [folderId]).filter((id) => selectedConnectorIds.has(id));
+      if (entry.picked) {
+        entry.picked.textContent =
+          pickedIds.length === 0
+            ? ""
+            : entry.suiteIds.length > 1
+            ? `${pickedIds.length} suite${pickedIds.length > 1 ? "s" : ""} selected`
+            : "selected";
+        entry.picked.classList.toggle("hidden", pickedIds.length === 0);
+      }
+
+      const checkbox = entry.card.querySelector(".connector-check");
+      if (!checkbox) {
+        entry.card.classList.toggle("card-picked-on", pickedIds.length > 0);
+        continue;
+      }
+      const disabled = applyTo(checkbox, folderId);
+      entry.card.classList.toggle("card-blocked", disabled && !checkbox.checked);
+    }
+
+    // The open chooser, if there is one.
+    if (openMenuCard) {
+      for (const row of openMenuCard.querySelectorAll(".suite-menu-item")) {
+        const box = row.querySelector(".suite-menu-check");
+        if (box) applyTo(box, row.dataset.folderId);
+      }
     }
 
     const count = selectedConnectorIds.size;
@@ -1665,6 +1738,16 @@
     await cancelRun(state.folder.id);
   });
 
+  /** The connection a folder should run against - its own card's, or its parent's if it is a companion. */
+  function connectionIdFor(folderId) {
+    for (const entry of connectorCards.values()) {
+      if (entry.connector.folderId === folderId) return entry.connector.connectionId;
+      const companion = (entry.companions || []).find((c) => c.folderId === folderId);
+      if (companion) return companion.connectionId;
+    }
+    return null;
+  }
+
   // ---------- Project view: run several connectors at once ----------
   projectRunSelectedBtn.addEventListener("click", () => {
     // Snapshot first: runTests() flips isRunning, which canStartClientSide()
@@ -1672,14 +1755,13 @@
     // rest from ever launching.
     const toRun = [...selectedConnectorIds].filter((id) => canStartClientSide(id));
     for (const folderId of toRun) {
-      const entry = connectorCards.get(folderId);
-      const connector = entry && entry.connector;
       runTests(folderId, null, {
         projectId: selectedProject && selectedProject.id,
         // Each folder carries its OWN connection - peaka-tables has none, and
         // a race folder borrows its parent's. Reading a single global here
-        // would give concurrent runs the same connection.
-        connectionId: connector && connector.connectionId,
+        // would give concurrent runs the same connection, and looking only at
+        // cards would miss the companions, which have no card of their own.
+        connectionId: connectionIdFor(folderId),
       });
     }
     refreshRunControls();
