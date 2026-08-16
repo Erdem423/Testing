@@ -91,13 +91,27 @@ function loadConnectorConfig(connectorId) {
  * process.env before calling this; that is a race once several connectors can
  * be checked or run concurrently, because whichever request wrote last would
  * win for all of them. Passing them through instead keeps each check isolated.
+ *
+ * apiKeyEnv/projectIdEnv IS THE SAME IDEA ONE LAYER UP. Stripe, Postgres,
+ * MongoDB and Peaka Tables all live in a single Peaka project, so CORE_REQUIRED
+ * naming PEAKA_API_KEY/PEAKA_PROJECT_ID literally was fine - only the catalog
+ * differed. Google Ads broke that: its connection lives in a SEPARATE project
+ * with its own key. A connector's config.js can now name different env vars to
+ * read instead, normalised back onto the canonical keys in `values` below so
+ * buildCtx.js and everything downstream needs no change at all.
+ *
+ * Only the CLI path (`npm test`) depends on this. The dashboard resolves the
+ * project from whatever key you connect with and which project you pick, so it
+ * reaches a second project without needing these at all.
  */
 function checkCredentials(connectorId = "stripe", envOverlay = null) {
   const errors = [];
   const values = {};
   const config = loadConnectorConfig(connectorId);
 
-  const required = [...CORE_REQUIRED, ...((config && config.requiredEnv) || [])];
+  const apiKeyEnv = (config && config.apiKeyEnv) || "PEAKA_API_KEY";
+  const projectIdEnv = (config && config.projectIdEnv) || "PEAKA_PROJECT_ID";
+  const required = [apiKeyEnv, projectIdEnv, ...((config && config.requiredEnv) || [])];
   const source = envOverlay ? { ...process.env, ...envOverlay } : process.env;
 
   for (const name of required) {
@@ -118,6 +132,11 @@ function checkCredentials(connectorId = "stripe", envOverlay = null) {
   if (values.STRIPE_TEST_TOKEN && !values.STRIPE_TEST_TOKEN.startsWith("sk_test_")) {
     errors.push("STRIPE_TEST_TOKEN must be a Stripe TEST key (sk_test_...). Refusing to run against a live key.");
   }
+
+  // Normalise onto the canonical names, so a connector reading a different
+  // key/project pair hands buildCtx.js exactly what every other one does.
+  if (apiKeyEnv !== "PEAKA_API_KEY" && values[apiKeyEnv]) values.PEAKA_API_KEY = values[apiKeyEnv];
+  if (projectIdEnv !== "PEAKA_PROJECT_ID" && values[projectIdEnv]) values.PEAKA_PROJECT_ID = values[projectIdEnv];
 
   return errors.length > 0 ? { ok: false, errors, config } : { ok: true, values, config };
 }
