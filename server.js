@@ -502,7 +502,18 @@ const CREDENTIAL_CONNECTOR_FOR_FOLDER = {
  * so the old .env-only CLI path (and any request that omits them) is
  * unaffected.
  */
+/** A query param that arrived as the literal "null"/"undefined" is absent, not a value. */
+function presentParam(v) {
+  return v && v !== "null" && v !== "undefined" ? v : null;
+}
+
 async function resolveConnectorEnv(connectorId, projectId, connectionId) {
+  // Belt and braces with the caller's own check: a client that stringifies a
+  // missing id (encodeURIComponent(null) === "null") would otherwise get past
+  // a plain truthiness test and be told its connection has no catalog, which
+  // is both wrong and impossible to act on.
+  projectId = presentParam(projectId);
+  connectionId = presentParam(connectionId);
   if (!projectId || !connectionId) return null;
   const config = loadConnectorConfig(connectorId);
   if (!config) return null;

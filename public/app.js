@@ -973,7 +973,13 @@
   // Defaults to currentFolderId so existing no-arg call sites keep working.
   async function checkConfig(folderId = currentFolderId) {
     let url = `/api/config-status?folder=${encodeURIComponent(folderId || "")}`;
-    if (selectedProject && selectedConnector) {
+    // The connectionId must be REAL, not merely present. Peaka Tables has none
+    // (it lives in the built-in catalog, see its config.js), and
+    // encodeURIComponent(null) yields the literal string "null" - which is
+    // truthy on the server, so it went looking for a catalog belonging to a
+    // connection called "null", found none, and reported "No catalog is set up
+    // for this connection yet" on a folder that needs no connection at all.
+    if (selectedProject && selectedConnector && selectedConnector.connectionId) {
       url += `&projectId=${encodeURIComponent(selectedProject.id)}&connectionId=${encodeURIComponent(selectedConnector.connectionId)}`;
     }
     const res = await fetch(url);
