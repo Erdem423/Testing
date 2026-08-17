@@ -530,6 +530,18 @@ async function resolveConnectorEnv(connectorId, projectId, connectionId) {
     [config.schemaEnv]: resolved.schemaName,
   };
   if (config.catalogNameEnv) overlay[config.catalogNameEnv] = resolved.catalogName;
+
+  // A connector that reads a DIFFERENT key/project pair (Google Ads, via
+  // apiKeyEnv/projectIdEnv) still gets the session's credentials here. Those
+  // alternate names exist for the CLI, where one static .env has to address
+  // two Peaka projects at once. The dashboard has no such problem: you
+  // connected with a key and picked a project, and those are the right ones
+  // by construction. Without this, opening Google Ads in the dashboard
+  // demanded PEAKA_API_KEY_ADS and PEAKA_PROJECT_ID_ADS from a .env that a
+  // dashboard user has no reason to have.
+  if (config.projectIdEnv) overlay[config.projectIdEnv] = projectId;
+  if (config.apiKeyEnv) overlay[config.apiKeyEnv] = apiKey;
+
   return overlay;
 }
 
