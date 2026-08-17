@@ -20,7 +20,7 @@ let ctx = null;
 // budget is generous to give those retries room.
 gatedTest(
   "GA-A: Catalog & Schema Discovery",
-  "googleAds.largeTable",
+  "googleAds.anyTable",
   async () => {
     requireCredentials("google-ads");
     ctx = buildFreshCtx("google-ads");

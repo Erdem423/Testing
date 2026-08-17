@@ -17,7 +17,7 @@ let ctx = null;
 // result is not capped" cannot be distinguished from "it happens to be small".
 gatedTest(
   "PG-D: Materialized Query Endpoints",
-  "postgres.largeTable",
+  "postgres.anyTable",
   async () => {
     requireCredentials("postgres");
     ctx = buildFreshCtx("postgres");

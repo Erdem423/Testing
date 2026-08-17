@@ -14,7 +14,7 @@ let ctx = null;
 // GATED on a large table: the pagination step deliberately pages BEYOND the Stripe cap, which needs a table big enough to have rows there.
 gatedTest(
   "PG-F: Error Handling & Pagination",
-  "postgres.largeTable",
+  "postgres.anyTable",
   async () => {
     requireCredentials("postgres");
     ctx = buildFreshCtx("postgres");

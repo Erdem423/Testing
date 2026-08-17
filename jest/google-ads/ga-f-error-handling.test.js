@@ -10,7 +10,7 @@ const { runGaErrorHandling } = require("../../tests/google-ads/ga-f-error-handli
 
 gatedTest(
   "GA-F: Error Handling & Pagination",
-  "googleAds.largeTable",
+  "googleAds.anyTable",
   async () => {
     requireCredentials("google-ads");
     const ctx = buildFreshCtx("google-ads");

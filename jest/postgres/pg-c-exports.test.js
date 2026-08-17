@@ -16,7 +16,7 @@ let ctx = null;
 // the entire claim of the headline step.
 gatedTest(
   "PG-C: Export Endpoints",
-  "postgres.largeTable",
+  "postgres.anyTable",
   async () => {
     requireCredentials("postgres");
     ctx = buildFreshCtx("postgres");

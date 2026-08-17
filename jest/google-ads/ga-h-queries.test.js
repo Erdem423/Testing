@@ -13,7 +13,7 @@ let ctx = null;
 
 gatedTest(
   "GA-H: Saved Query Endpoints",
-  "googleAds.largeTable",
+  "googleAds.anyTable",
   async () => {
     requireCredentials("google-ads");
     ctx = buildFreshCtx("google-ads");

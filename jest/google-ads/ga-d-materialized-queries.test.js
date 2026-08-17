@@ -14,7 +14,7 @@ let ctx = null;
 
 gatedTest(
   "GA-D: Materialized Query Endpoints",
-  "googleAds.largeTable",
+  "googleAds.anyTable",
   async () => {
     requireCredentials("google-ads");
     ctx = buildFreshCtx("google-ads");

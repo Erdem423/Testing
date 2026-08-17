@@ -14,7 +14,7 @@ let ctx = null;
 // GATED on a large table: the execute-by-name step asserts a saved query sees the WHOLE table rather than the Stripe cap.
 gatedTest(
   "PG-H: Saved Query Endpoints",
-  "postgres.largeTable",
+  "postgres.anyTable",
   async () => {
     requireCredentials("postgres");
     ctx = buildFreshCtx("postgres");

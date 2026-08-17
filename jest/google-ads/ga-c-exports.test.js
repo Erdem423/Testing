@@ -14,7 +14,7 @@ let ctx = null;
 
 gatedTest(
   "GA-C: Export Endpoints",
-  "googleAds.largeTable",
+  "googleAds.anyTable",
   async () => {
     requireCredentials("google-ads");
     ctx = buildFreshCtx("google-ads");

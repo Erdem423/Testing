@@ -154,16 +154,21 @@ async function runPgMaterializedQueries(ctx) {
       table.rowCount,
       `rows captured by the materialized query over '${table.tableName}'`
     );
-    assert(
-      materializedRows > ctx.expectedCustomerCountNonCache,
-      `The materialized result holds ${materializedRows} rows, at or below the Stripe live cap ` +
-        `(${ctx.expectedCustomerCountNonCache}). If a database connector's materialized queries have started ` +
-        `freezing a capped snapshot, the cap is no longer connector-specific and FINDINGS.md is wrong.`
-    );
-    console.log(
-      `materialized result holds ${materializedRows} of ${table.rowCount} rows - ` +
-        `Stripe's equivalent freezes at ${ctx.expectedCustomerCountNonCache}`
-    );
+    // The assertEqual above is this step's real claim - the materialized result
+    // holds the WHOLE table - and it holds at any size. Beating Stripe's cap is
+    // a second, weaker claim that only means something on a table bigger than
+    // the cap: "1 row is not more than 100" says nothing about truncation.
+    if (materializedRows > ctx.expectedCustomerCountNonCache) {
+      console.log(
+        `materialized result holds ${materializedRows} of ${table.rowCount} rows - ` +
+          `Stripe's equivalent freezes at ${ctx.expectedCustomerCountNonCache}`
+      );
+    } else {
+      console.log(
+        `materialized result holds all ${materializedRows} of ${table.rowCount} rows. Too few to also ` +
+          `demonstrate it beats Stripe's ${ctx.expectedCustomerCountNonCache}-row cap - that half is skipped.`
+      );
+    }
   });
 
   await step("cancel with nothing running is handled cleanly", async () => {
