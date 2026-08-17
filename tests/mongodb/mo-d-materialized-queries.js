@@ -125,16 +125,24 @@ async function runMoMaterializedQueries(ctx) {
       table.rowCount,
       `rows captured by the materialized query over '${table.tableName}'`
     );
-    assert(
-      materializedRows > ctx.expectedCustomerCountNonCache,
-      `The materialized result holds ${materializedRows} rows, at or below the Stripe live cap ` +
-        `(${ctx.expectedCustomerCountNonCache}). If MongoDB's materialized queries have started freezing a ` +
-        `capped snapshot, the cap is no longer connector-specific.`
-    );
-    console.log(
-      `materialized result holds ${materializedRows} of ${table.rowCount} rows - ` +
-        `Stripe's equivalent freezes at ${ctx.expectedCustomerCountNonCache}`
-    );
+    // The assertEqual above is this step's real claim - the materialized
+    // result holds the WHOLE collection - and it holds at any size. The
+    // comparison against Stripe's cap below is a SECOND, weaker claim that
+    // only means something when the collection is bigger than the cap; on a
+    // smaller one, "1 row is not more than 100" says nothing about
+    // truncation. Asserting it regardless failed this scenario on sample
+    // data while its actual subject had already passed.
+    if (materializedRows > ctx.expectedCustomerCountNonCache) {
+      console.log(
+        `materialized result holds ${materializedRows} of ${table.rowCount} rows - ` +
+          `Stripe's equivalent freezes at ${ctx.expectedCustomerCountNonCache}`
+      );
+    } else {
+      console.log(
+        `materialized result holds all ${materializedRows} of ${table.rowCount} rows. Too few to also ` +
+          `demonstrate it beats Stripe's ${ctx.expectedCustomerCountNonCache}-row cap - that half is skipped.`
+      );
+    }
   });
 
   await step("cancel with nothing running is handled cleanly", async () => {

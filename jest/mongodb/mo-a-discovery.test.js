@@ -18,7 +18,7 @@ let ctx = null;
 // from "capped at 100".
 gatedTest(
   "MO-A: Catalog & Schema Discovery",
-  "mongodb.largeTable",
+  "mongodb.anyTable",
   async () => {
     requireCredentials("mongodb");
     ctx = buildFreshCtx("mongodb");

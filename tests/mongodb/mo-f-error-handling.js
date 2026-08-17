@@ -71,10 +71,18 @@ async function runMoErrorHandling(ctx) {
     const cap = ctx.expectedCustomerCountNonCache;
     const pageSize = 20;
     const offsets = [cap + 40, cap + 60];
-    assert(
-      table.rowCount > offsets[1] + pageSize,
-      `'${table.tableName}' has ${table.rowCount} rows - too few to page past the cap at offset ${offsets[1]}`
-    );
+    // Self-skip, not a failure - see the note in mo-a-discovery.js. This is
+    // the only step in this scenario that needs volume; the three
+    // error-handling steps above (non-existent collection, schema and column)
+    // assert on rejections and need no data whatsoever, so losing them to a
+    // row-count gate was the worst case of over-gating in this folder.
+    if (table.rowCount <= offsets[1] + pageSize) {
+      console.log(
+        `skipped: '${table.tableName}' has ${table.rowCount} rows - too few to page past the cap at ` +
+          `offset ${offsets[1]}. The error-handling steps still ran.`
+      );
+      return;
+    }
 
     const pages = [];
     for (const offset of offsets) {

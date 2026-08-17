@@ -82,13 +82,18 @@ async function runMoQueries(ctx) {
     const rows = Number(res.body.data[0].cnt);
 
     assertEqual(rows, table.rowCount, `rows visible through the saved query over '${table.tableName}'`);
-    assert(
-      rows > ctx.expectedCustomerCountNonCache,
-      `A saved query over MongoDB returned ${rows} rows, at or below the Stripe cap ` +
-        `(${ctx.expectedCustomerCountNonCache}). If saved queries have started truncating a database ` +
-        `connector's reads, the cap is no longer connector-specific.`
-    );
-    console.log(`saved query sees ${rows} rows - Stripe's equivalent would see ${ctx.expectedCustomerCountNonCache}`);
+    // Same split as mo-d-materialized-queries.js: the assertEqual above is
+    // the real claim (the saved query sees the whole collection) and holds at
+    // any size. Beating Stripe's cap is a second claim that needs a
+    // collection bigger than the cap to mean anything.
+    if (rows > ctx.expectedCustomerCountNonCache) {
+      console.log(`saved query sees ${rows} rows - Stripe's equivalent would see ${ctx.expectedCustomerCountNonCache}`);
+    } else {
+      console.log(
+        `saved query sees all ${rows} rows. Too few to also demonstrate it beats Stripe's ` +
+          `${ctx.expectedCustomerCountNonCache}-row cap - that half is skipped.`
+      );
+    }
   });
 
   await step("transpile SQL to another dialect", async () => {

@@ -17,7 +17,7 @@ let ctx = null;
 // happens to be small".
 gatedTest(
   "MO-D: Materialized Query Endpoints",
-  "mongodb.largeTable",
+  "mongodb.anyTable",
   async () => {
     requireCredentials("mongodb");
     ctx = buildFreshCtx("mongodb");

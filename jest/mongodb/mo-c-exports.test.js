@@ -16,7 +16,7 @@ let ctx = null;
 // capped one - the entire claim of the headline step.
 gatedTest(
   "MO-C: Export Endpoints",
-  "mongodb.largeTable",
+  "mongodb.anyTable",
   async () => {
     requireCredentials("mongodb");
     ctx = buildFreshCtx("mongodb");

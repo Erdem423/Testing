@@ -12,7 +12,7 @@ const { runMoErrorHandling } = require("../../tests/mongodb/mo-f-error-handling"
 // the Stripe cap, which needs a collection big enough to have rows there.
 gatedTest(
   "MO-F: Error Handling & Pagination",
-  "mongodb.largeTable",
+  "mongodb.anyTable",
   async () => {
     requireCredentials("mongodb");
     const ctx = buildFreshCtx("mongodb");

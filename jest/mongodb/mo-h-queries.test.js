@@ -15,7 +15,7 @@ let ctx = null;
 // query sees the WHOLE collection rather than the Stripe cap.
 gatedTest(
   "MO-H: Saved Query Endpoints",
-  "mongodb.largeTable",
+  "mongodb.anyTable",
   async () => {
     requireCredentials("mongodb");
     ctx = buildFreshCtx("mongodb");

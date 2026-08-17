@@ -111,10 +111,19 @@ async function runMoDiscovery(ctx) {
   // full numeric/text classification machinery that scenario has - one LIMIT
   // past 100 is enough to prove the point for a first scenario.
   await step("querying past 100 rows is not capped, unlike Stripe", async () => {
-    assert(
-      rowCount > 100,
-      `'${tableName}' has only ${rowCount} rows - too few to distinguish "uncapped" from "capped at 100"`
-    );
+    // SKIPS ITSELF rather than failing the scenario. This one step needs a
+    // collection bigger than the cap; the other nine here (catalogs, schemas,
+    // column types, cacheability, the three _id findings) work against any
+    // collection at all. Gating the whole scenario on volume meant a project
+    // with only sample data lost all ten, which is why the gate moved to
+    // anyTable and the requirement lives here instead.
+    if (rowCount <= 100) {
+      console.log(
+        `skipped: '${tableName}' has only ${rowCount} rows - too few to distinguish "uncapped" ` +
+          `from "capped at 100". Everything else in this scenario still ran.`
+      );
+      return;
+    }
     const res = await ctx.client.executeQuery(
       {
         statement:
