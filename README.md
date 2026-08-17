@@ -1,8 +1,13 @@
 # Peaka Partner API Test Suite
 
 An end-to-end Jest suite that validates the [Peaka Partner API](https://docs.peaka.com/api-reference/introduction)
-against five things: a live Stripe connector, a live HubSpot connector, a live Postgres (Supabase)
-connector, a live MongoDB connector, and Peaka's own built-in Peaka Table / BI Table feature.
+against six things: a live Stripe connector, a live HubSpot connector, a live Postgres (Supabase)
+connector, a live MongoDB connector, a live Google Ads connector, and Peaka's own built-in Peaka Table /
+BI Table feature.
+
+**75 scenarios across 8 folders**, every one running against the real API: Stripe (12), Peaka Tables (22),
+HubSpot (11), Postgres (9), MongoDB (8), Google Ads (6), plus two concurrency-race folders (4 + 3) that
+deliberately manufacture conflicting operations to see how the platform behaves under them.
 
 Peaka is a data-integration platform: you connect a source, it exposes the source's tables through a SQL
 interface, and — for API connectors — it can *cache* those tables locally for faster reads. This suite
@@ -34,9 +39,11 @@ their own connection, token and all.
 
 ## What it found
 
-Testing against the real API surfaced several genuine product bugs, and — via a second and third
-connector — settled which platform claims were connector-specific rather than Peaka-wide. Full write-ups,
-with evidence and reproduction steps, are in **[FINDINGS.md](FINDINGS.md)**.
+Testing against the real API surfaced several genuine product bugs, and — by asking the same questions of
+five different connectors — settled which platform claims were connector-specific rather than Peaka-wide.
+That is what a second connector buys you, and each one after it sharpens the attribution: the row cap
+turned out to be Stripe's, not Peaka's, and Postgres, MongoDB and Google Ads each independently confirm it.
+Full write-ups, with evidence and reproduction steps, are in **[FINDINGS.md](FINDINGS.md)** (36 findings).
 
 | Finding | Severity |
 |---|---|
