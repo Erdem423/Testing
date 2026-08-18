@@ -114,7 +114,7 @@ module.exports = {
       name: "H: Catalog Endpoints",
       category: "Catalogs",
       steps: [
-        "create a connection to hang the catalog off",
+        "resolve the connection to hang the catalog off",
         "create a catalog",
         "list catalogs includes the new one and the configured one",
         "search finds a known Stripe table",
@@ -166,7 +166,7 @@ module.exports = {
       name: "L: Metadata Refresh Endpoints",
       category: "Metadata",
       steps: [
-        "create a connection and catalog to refresh",
+        "provision a catalog to refresh",
         "read the refresh status before triggering anything",
         "trigger a metadata refresh",
         "refresh status reaches a terminal state",

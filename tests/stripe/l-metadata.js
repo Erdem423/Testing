@@ -1,5 +1,6 @@
 const { assertStatus, assert, assertIncludes } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
+const { provisionCatalogOnSharedConnection } = require("../../helpers/provisionCatalog");
 
 const POLL_INTERVAL_MS = 3000;
 const MAX_POLL_ATTEMPTS = 40; // ~120s
@@ -30,20 +31,14 @@ async function runMetadata(ctx) {
   let connectionId = null;
   let catalogId = null;
 
-  await step("create a connection and catalog to refresh", async () => {
-    const connRes = await ctx.client.createConnection({
-      name,
-      type: "stripe",
-      credential: { token: ctx.token },
-    });
-    assertStatus(connRes, 200, "createConnection");
-    connectionId = connRes.body.id;
-    ctx.createdConnectionIds.push(connectionId);
-
-    const catRes = await ctx.client.createCatalog({ name, connectionId });
-    assertStatus(catRes, 200, "createCatalog");
-    catalogId = catRes.body.id;
-    ctx.createdCatalogIds.push(catalogId);
+  await step("provision a catalog to refresh", async () => {
+    // ON THE EXISTING CONNECTION - see helpers/provisionCatalog.js. Refreshing
+    // metadata on the SHARED catalog while B lists its tables and C queries it
+    // is the interference this avoids; that needs a separate catalog, not a
+    // separate connection, and only the latter needed a Stripe credential.
+    const provisioned = await provisionCatalogOnSharedConnection(ctx, name);
+    catalogId = provisioned.catalogId;
+    connectionId = provisioned.connectionId;
   });
 
   await step("read the refresh status before triggering anything", async () => {

@@ -1,5 +1,6 @@
 const { assertStatus, assertStatusIn, assert, assertEqual } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
+const { provisionCatalogOnSharedConnection } = require("../../helpers/provisionCatalog");
 const { pollCacheUntilComplete } = require("../../helpers/pollCacheUntilComplete");
 
 // Fixture chosen for SYNC SPEED, not size: this scenario tests cache
@@ -40,19 +41,12 @@ async function runCacheManagement(ctx) {
 
   await step("provision an isolated catalog", async () => {
     const name = `e2e-auto-cachemgmt-${ctx.runTag}`;
-    const conn = await ctx.client.createConnection({
-      name,
-      type: "stripe",
-      credential: { token: ctx.token },
-    });
-    assertStatus(conn, 200, "createConnection (cache-management catalog)");
-    ctx.createdConnectionIds.push(conn.body.id);
-
-    const cat = await ctx.client.createCatalog({ name, connectionId: conn.body.id });
-    assertStatus(cat, 200, "createCatalog (cache-management catalog)");
-    assert(cat.body && cat.body.id, "Expected a catalog id in the response");
-    catalogId = cat.body.id;
-    ctx.createdCatalogIds.push(catalogId);
+    // ON THE CONNECTION THE SUITE ALREADY HAS, not a new one - see
+    // helpers/provisionCatalog.js. This scenario needs AN isolated catalog,
+    // never a new CONNECTION, and creating one demanded STRIPE_TEST_TOKEN of a
+    // scenario that only exercises Peaka's cache endpoints.
+    const provisioned = await provisionCatalogOnSharedConnection(ctx, name);
+    catalogId = provisioned.catalogId;
 
     // Guards against silently falling back to the shared catalog, which is
     // the exact regression this change exists to prevent.

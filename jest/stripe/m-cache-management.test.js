@@ -14,21 +14,17 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { gateFor, skipUnless } = require("../../helpers/preflight");
-const { checkWithToken } = require("../../tests/stripe/checkTokenCredentials");
+const { gateFor } = require("../../helpers/preflight");
 const { runCacheManagement } = require("../../tests/stripe/m-cache-management");
 
 let ctx = null;
 
-// TWO REASONS THIS CAN SKIP, reported separately. The preflight gate covers
-// "the connector has no data to work with"; the token check covers "this one
-// creates a Stripe connection and there is no key to create it with". Both
-// are legitimate, and collapsing them lost the distinction - see
-// tests/stripe/checkTokenCredentials.js.
-const tokenCheck = checkWithToken();
-const gate = tokenCheck.ok
-  ? gateFor("M: Cache Management Endpoints", "stripe.configured")
-  : skipUnless(tokenCheck, "M: Cache Management Endpoints", "It caches fixture tables in a connection and catalog it provisions itself, so it cannot collide with C's caches in the shared catalog.");
+// NO TOKEN CHECK ANY MORE. This used to create its own Stripe CONNECTION,
+// which needed STRIPE_TEST_TOKEN; it now provisions its catalog on the
+// connection the suite is already configured against (see
+// helpers/provisionCatalog.js), so the only thing that can gate it is the
+// ordinary preflight question of whether there is data to work with.
+const gate = gateFor("M: Cache Management Endpoints", "stripe.configured");
 
 (gate.ok ? test : test.skip)(
   gate.name,

@@ -1,5 +1,6 @@
 const { assertStatus, assertStatusIn, assert, assertEqual } = require("../../helpers/assert");
 const { step } = require("../../helpers/step");
+const { provisionCatalogOnSharedConnection } = require("../../helpers/provisionCatalog");
 
 const POLL_INTERVAL_MS = 2000;
 const MAX_POLL_ATTEMPTS = 45; // ~90s
@@ -55,17 +56,12 @@ async function runMaterializedQueries(ctx) {
   // invisible to C.
   await step("provision an isolated catalog", async () => {
     const name = `e2e-auto-matq-cat-${ctx.runTag}`;
-    const conn = await ctx.client.createConnection({
-      name,
-      type: "stripe",
-      credential: { token: ctx.token },
-    });
-    assertStatus(conn, 200, "createConnection (materialized-query catalog)");
-    ctx.createdConnectionIds.push(conn.body.id);
-
-    const cat = await ctx.client.createCatalog({ name, connectionId: conn.body.id });
-    assertStatus(cat, 200, "createCatalog (materialized-query catalog)");
-    ctx.createdCatalogIds.push(cat.body.id);
+    // ON THE EXISTING CONNECTION - see helpers/provisionCatalog.js. The
+    // isolation this scenario needs is at the CATALOG level (C caches
+    // `customers` in the shared one, and querying a table live while a cache
+    // on it syncs returns 0 rows); a separate connection was only ever the
+    // means, and it cost a Stripe credential.
+    const cat = { body: { id: (await provisionCatalogOnSharedConnection(ctx, name)).catalogId } };
     assert(
       String(cat.body.id) !== String(ctx.catalogId),
       "This scenario must never fall back to the shared PEAKA_CATALOG_ID"

@@ -15,15 +15,23 @@ async function runCatalogs(ctx) {
   let connectionId = null;
   let catalogId = null;
 
-  await step("create a connection to hang the catalog off", async () => {
-    const res = await ctx.client.createConnection({
-      name,
-      type: "stripe",
-      credential: { token: ctx.token },
-    });
-    assertStatus(res, 200, "createConnection");
-    connectionId = res.body.id;
-    ctx.createdConnectionIds.push(connectionId);
+  // RESOLVED, NOT CREATED. This scenario's subject is CATALOG endpoints; the
+  // connection was only ever something to hang a catalog off. Creating one
+  // needs STRIPE_TEST_TOKEN, which made every catalog assertion below
+  // unreachable without a Stripe API key - and a catalog does not need a NEW
+  // connection, only A connection. Confirmed live that Peaka accepts a second
+  // catalog on an already-catalogued Stripe connection; see
+  // helpers/provisionCatalog.js for the measurement and for what to do if that
+  // ever changes.
+  await step("resolve the connection to hang the catalog off", async () => {
+    const res = await ctx.client.listCatalogs();
+    assertStatus(res, 200, "listCatalogs (to resolve the configured connection)");
+    const shared = (res.body || []).find((c) => String(c.id) === String(ctx.catalogId));
+    assert(
+      shared && shared.connectionId,
+      `Could not resolve a connection for the configured catalog ${ctx.catalogId}`
+    );
+    connectionId = shared.connectionId;
   });
 
   await step("create a catalog", async () => {
