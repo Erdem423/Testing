@@ -973,14 +973,23 @@
   // Defaults to currentFolderId so existing no-arg call sites keep working.
   async function checkConfig(folderId = currentFolderId) {
     let url = `/api/config-status?folder=${encodeURIComponent(folderId || "")}`;
-    // The connectionId must be REAL, not merely present. Peaka Tables has none
-    // (it lives in the built-in catalog, see its config.js), and
-    // encodeURIComponent(null) yields the literal string "null" - which is
-    // truthy on the server, so it went looking for a catalog belonging to a
-    // connection called "null", found none, and reported "No catalog is set up
-    // for this connection yet" on a folder that needs no connection at all.
-    if (selectedProject && selectedConnector && selectedConnector.connectionId) {
-      url += `&projectId=${encodeURIComponent(selectedProject.id)}&connectionId=${encodeURIComponent(selectedConnector.connectionId)}`;
+    // THE PROJECT ID GOES EVERY TIME, the connectionId only when it is REAL.
+    // Peaka Tables has none (it lives in the built-in catalog, see its
+    // config.js) and encodeURIComponent(null) yields the literal string
+    // "null" - truthy on the server, which then went looking for a catalog
+    // belonging to a connection called "null", found none, and reported "No
+    // catalog is set up for this connection yet" on a folder that needs no
+    // connection at all.
+    //
+    // Sending NEITHER was the overcorrection: with no projectId the server
+    // has nothing to build an overlay from, falls back to process.env, and
+    // asks for a PEAKA_PROJECT_ID that only a .env ever sets - so the one
+    // folder needing no credentials was the one demanding a .env file.
+    if (selectedProject) {
+      url += `&projectId=${encodeURIComponent(selectedProject.id)}`;
+      if (selectedConnector && selectedConnector.connectionId) {
+        url += `&connectionId=${encodeURIComponent(selectedConnector.connectionId)}`;
+      }
     }
     const res = await fetch(url);
     const data = await res.json();
@@ -1609,8 +1618,12 @@
     if (namesFilter) {
       url += `&names=${encodeURIComponent(namesFilter.join(","))}`;
     }
-    if (conn && conn.projectId && conn.connectionId) {
-      url += `&projectId=${encodeURIComponent(conn.projectId)}&connectionId=${encodeURIComponent(conn.connectionId)}`;
+    // Same split as checkConfig(): the project always, the connection only if
+    // this folder has one. A connection-less folder that sent no projectId
+    // ran against whatever .env named rather than the project just picked.
+    if (conn && conn.projectId) {
+      url += `&projectId=${encodeURIComponent(conn.projectId)}`;
+      if (conn.connectionId) url += `&connectionId=${encodeURIComponent(conn.connectionId)}`;
     }
 
     const source = new EventSource(url);

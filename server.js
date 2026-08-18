@@ -514,13 +514,30 @@ async function resolveConnectorEnv(connectorId, projectId, connectionId) {
   // is both wrong and impossible to act on.
   projectId = presentParam(projectId);
   connectionId = presentParam(connectionId);
-  if (!projectId || !connectionId) return null;
+  if (!projectId) return null;
   const config = loadConnectorConfig(connectorId);
   if (!config) return null;
 
   const apiKey = process.env.PEAKA_API_KEY;
   if (!apiKey || PLACEHOLDER_VALUES.has(apiKey)) {
     throw new Error("PEAKA_API_KEY is not set in .env (or is still a placeholder value).");
+  }
+
+  // A CONNECTION-LESS FOLDER STILL NEEDS THE PROJECT. Peaka Tables declares
+  // requiresConnection: false and has no catalog or schema to resolve, so
+  // this used to return null the moment connectionId was absent - and a null
+  // overlay sends checkCredentials() back to process.env, where nothing had
+  // ever put PEAKA_PROJECT_ID. The dashboard sets it only on the manual
+  // "type a project id" path; the ordinary flow (key lists projects, you pick
+  // one) carries the id per request instead. So Peaka Tables was the one
+  // folder that still demanded a .env, reporting "Missing PEAKA_PROJECT_ID"
+  // on a folder whose requiredEnv is empty.
+  //
+  // With a .env present the failure was quieter and worse: the run inherited
+  // whatever project .env named, not the one picked in the UI.
+  if (!connectionId) {
+    if (config.requiresConnection === false) return { PEAKA_PROJECT_ID: projectId };
+    return null;
   }
 
   const resolved = await resolveDynamicConnectorConfig({ apiKey, projectId, connectionId, connectorId });
@@ -554,10 +571,22 @@ app.get("/api/config-status", async (req, res) => {
   // "stripe" unconditionally (the old behavior) either wrongly disables the
   // Run buttons for a correctly-configured HubSpot folder when only Stripe's
   // creds are set, or wrongly reports "OK" for an unconfigured HubSpot folder
-  // when only Stripe's are. req.query.folder is optional (older cached
-  // frontend code, or a direct API call) and falls back to "stripe" to match
-  // the previous default.
-  const connectorId = CREDENTIAL_CONNECTOR_FOR_FOLDER[req.query.folder] || "stripe";
+  // when only Stripe's are.
+  //
+  // THE MAP ONLY HOLDS THE FOLDERS THAT BORROW ANOTHER'S CREDENTIALS - the
+  // race folders, which run against their parent's connection. Every other
+  // folder is its own connector and was never in it, so falling back to
+  // "stripe" meant MongoDB, Postgres, Google Ads and Peaka Tables were all
+  // being checked against Stripe's requiredEnv (STRIPE_TEST_TOKEN,
+  // PEAKA_CATALOG_ID, PEAKA_SCHEMA_NAME). With a fully populated .env that
+  // check happens to pass, which is why it went unnoticed; with no .env -
+  // the case the dashboard is supposed to support - every folder reported
+  // Stripe's four missing variables, Peaka Tables included, despite its
+  // requiredEnv being empty. /api/run-stream already defaults to the folder
+  // id; these two now agree. req.query.folder is still optional (older
+  // cached frontend code, or a direct API call).
+  const folder = req.query.folder;
+  const connectorId = CREDENTIAL_CONNECTOR_FOR_FOLDER[folder] || folder || "stripe";
 
   let overlay;
   try {
