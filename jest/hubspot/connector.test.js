@@ -29,6 +29,7 @@
  */
 
 const { cleanup } = require("../../helpers/cleanup");
+const { skipUnless } = require("../../helpers/preflight");
 const { withScenario } = require("../../helpers/stepReporter");
 const { runCatalogSchemaDiscovery } = require("../../tests/hubspot/b-catalog-schema");
 const { runDataAndCache } = require("../../tests/hubspot/c-data-and-cache");
@@ -50,19 +51,28 @@ let ctxF = null;
 // helpers/env.js. This is expected to be the normal state until
 // HUBSPOT_ACCESS_TOKEN / PEAKA_HUBSPOT_CATALOG_ID / PEAKA_HUBSPOT_SCHEMA_NAME
 // are added to .env.
-const maybeConcurrent = check.ok ? test.concurrent : test.concurrent.skip;
-if (!check.ok) {
-  console.warn(`Skipping HubSpot B/C/F - credentials not configured:\n${check.errors.join("\n")}`);
-}
+// Each carries its OWN reason. A bare test.concurrent.skip puts the reason in
+// the console and nowhere the dashboard can reach - jest/browserReporter.js
+// recovers a skip reason by parsing SKIP_MARKER off the test title, so these
+// three were the last scenarios in the suite still rendering as "skipped"
+// with no explanation at all. See helpers/preflight.js's skipUnless().
+const WHY =
+  "All three read the pre-existing HubSpot catalog through Peaka - they need its id and schema, but no HubSpot token.";
+const gates = {
+  B: skipUnless(check, "B: Catalog & Schema Discovery", WHY),
+  C: skipUnless(check, "C: Data Correctness & Cache Behavior", WHY),
+  F: skipUnless(check, "F: Error Handling & Edge Cases", WHY),
+};
+const runner = (gate) => (gate.ok ? test.concurrent : test.concurrent.skip);
 
-maybeConcurrent("B: Catalog & Schema Discovery", async () => {
+runner(gates.B)(gates.B.name, async () => {
   requireCredentials("hubspot");
   ctxB = buildFreshCtx("hubspot");
   await withScenario("B: Catalog & Schema Discovery", () => runCatalogSchemaDiscovery(ctxB));
 });
 
-maybeConcurrent(
-  "C: Data Correctness & Cache Behavior",
+runner(gates.C)(
+  gates.C.name,
   async () => {
     requireCredentials("hubspot");
     ctxC = buildFreshCtx("hubspot");
@@ -74,7 +84,7 @@ maybeConcurrent(
   300000
 );
 
-maybeConcurrent("F: Error Handling & Edge Cases", async () => {
+runner(gates.F)(gates.F.name, async () => {
   requireCredentials("hubspot");
   ctxF = buildFreshCtx("hubspot");
   await withScenario("F: Error Handling & Edge Cases", () => runErrorHandling(ctxF));
