@@ -1,6 +1,6 @@
 const { PeakaClient } = require("./peakaClient");
 const { loadConnectorConfig } = require("./env");
-const { resolveDynamicConnectorConfig } = require("./peakaAccount");
+const { resolveDynamicConnectorConfig, discoverAllProjects } = require("./peakaAccount");
 const fs = require("fs");
 const path = require("path");
 
@@ -25,6 +25,38 @@ const path = require("path");
  */
 const FOLDER_TO_CONNECTOR = { races: "stripe", "hubspot-races": "hubspot" };
 
+/**
+ * Finds which project this key can see that holds a catalog of one of
+ * `catalogTypes`. Cached for the process: the answer cannot change mid-run and
+ * the scan costs one listCatalogs per project.
+ */
+const projectSearchCache = new Map();
+
+async function findProjectHoldingCatalogType(apiKey, catalogTypes) {
+  const types = catalogTypes.map((t) => String(t).toLowerCase());
+  if (!types.length) return null;
+  const cacheKey = types.join(",");
+  if (projectSearchCache.has(cacheKey)) return projectSearchCache.get(cacheKey);
+
+  let found = null;
+  try {
+    const projects = await discoverAllProjects(apiKey);
+    for (const project of projects) {
+      const client = new PeakaClient({ apiKey, projectId: project.id });
+      const res = await client.listCatalogs();
+      if (!res.ok || !Array.isArray(res.body)) continue;
+      if (res.body.some((c) => types.includes(String(c.catalogType).toLowerCase()))) {
+        found = project.id;
+        break;
+      }
+    }
+  } catch (_) {
+    found = null; // best-effort, exactly like the rest of this module
+  }
+  projectSearchCache.set(cacheKey, found);
+  return found;
+}
+
 async function autoConfigureConnectors({ log = () => {}, only = null } = {}) {
   // Scoped the same way as the preflight: a dashboard run of one folder has no
   // business resolving catalogs for connectors it will not execute.
@@ -45,12 +77,23 @@ async function autoConfigureConnectors({ log = () => {}, only = null } = {}) {
     const config = loadConnectorConfig(connectorId);
     if (!config || !config.catalogIdEnv) continue; // connection-less (peaka-tables) or a race companion
 
-    // A connector addressing a DIFFERENT project (Google Ads) is only
-    // discoverable when its own key and project are supplied - by definition
-    // this project's catalogs are not its.
-    const key = config.apiKeyEnv ? process.env[config.apiKeyEnv] : apiKey;
-    const proj = config.projectIdEnv ? process.env[config.projectIdEnv] : projectId;
-    if (!key || !proj) continue;
+    // A connector can address a DIFFERENT project than the one under test -
+    // Google Ads does, via apiKeyEnv/projectIdEnv. Those exist because the
+    // suite once used two API keys, each scoped to one project. A single
+    // Partner key that can see several projects makes that split unnecessary,
+    // so rather than declaring the connector unconfigured, look for its
+    // catalog in the OTHER projects this key can reach.
+    let key = config.apiKeyEnv ? process.env[config.apiKeyEnv] : apiKey;
+    let proj = config.projectIdEnv ? process.env[config.projectIdEnv] : projectId;
+
+    if (!key) key = apiKey;
+    if (!proj) {
+      proj = await findProjectHoldingCatalogType(apiKey, config.catalogTypes || []);
+      if (!proj) continue; // no project this key can see has one - genuinely absent
+      // Write both back, because checkCredentials() reads exactly these names.
+      if (config.projectIdEnv) process.env[config.projectIdEnv] = proj;
+      if (config.apiKeyEnv && !process.env[config.apiKeyEnv]) process.env[config.apiKeyEnv] = apiKey;
+    }
 
     const needsCatalog = !process.env[config.catalogIdEnv];
     const needsSchema = config.schemaEnv && !process.env[config.schemaEnv];
