@@ -1050,7 +1050,7 @@ is missing, which is what a caller should do anyway.
 
 ## 32. MongoDB's `_id` is invisible, and the obvious way to filter on it is broken
 
-Found while building the first MongoDB scenario (`tests/mongodb/mo-a-discovery.js`, project `z8mo8AxO`,
+Found while building the first MongoDB scenario (`tests/mongodb/mo-a-discovery.js`, project A,
 catalog `connect2`, collection `e_commerce.commerce`, 25,000 rows). Every MongoDB document has an `_id` —
 it is the collection's real primary key — and Peaka drops it from the schema mapping entirely:
 
@@ -1110,7 +1110,7 @@ statistics for a Postgres catalog, while Stripe's equivalent (`tests/stripe/h-ca
 `400 "Catalog type: stripe is not being supported yet"`. Read with only those two data points, the obvious
 generalization is "database connectors get it, API connectors don't" — and that generalization is wrong.
 
-Measured live against the third connector, `connect2` (MongoDB), project `z8mo8AxO`:
+Measured live against the third connector, a MongoDB connection in project A:
 
 ```
 GET .../tables/commerce/statistics  (catalogType: peaka_mongodb)
@@ -1304,7 +1304,7 @@ The deliberate concurrency tests (`npm run test:races`) and their per-tier outco
 invariants rather than expected values.
 ## 34. Every Google Ads table carries synthetic `_q_*` request-parameter columns alongside its real data
 
-Found building the fourth connector folder (`tests/google-ads/`, project `uLgI0O4j`, catalog `gads`).
+Found building the fourth connector folder (`tests/google-ads/`, project C, catalog `gads`).
 `listColumns` on `ad_group_criterion` (97 columns) and `keyword_stats_report` (32 columns) both include a
 set of columns prefixed `_q_`: `_q_pagination_anchor`, `_q_customer_id`, `_q_limit`, `_q_offset`,
 `_q_query`, `_q_search_settings`, `_q_validate_only`, `_q_page_size`, and (on report tables only)
@@ -1406,20 +1406,20 @@ connection that already had one, then deleting it:
 
 | Project | Connection | `createCatalog` |
 |---|---|---|
-| `9LBuaGGX` | MongoDB | **500** |
-| `9LBuaGGX` | Stripe | **500** |
-| `z8mo8AxO` | MongoDB | 200 (deleted cleanly) |
-| `z8mo8AxO` | Postgres | 200 (deleted cleanly) |
+| project B | MongoDB | **500** |
+| project B | Stripe | **500** |
+| project A | MongoDB | 200 (deleted cleanly) |
+| project A | Postgres | 200 (deleted cleanly) |
 
 **This corrects an earlier conclusion in this repo.** `tests/hubspot/h-catalogs.js` recorded that Peaka
 returns 500 when a second catalog is attached to a connection that already has one, reproduced across
 H/L/M/N, and a helper implementing that approach was deleted as unworkable. That reproduction was real
-but the attribution was wrong: every HubSpot run happened in `9LBuaGGX`, where the call fails for
+but the attribution was wrong: every HubSpot run happened in project B, where the call fails for
 *every* connection including Stripe's, and the Stripe scenarios that later succeeded with the same call
-were running in `z8mo8AxO`. Two variables moved together and the wrong one got the blame - the lesson
+were running in project A. Two variables moved together and the wrong one got the blame - the lesson
 being that "reproduced four times" is not the same as "isolated".
 
-`9LBuaGGX` is also the project whose `listConnections` returns 403 for this key (finding 30), so the
+Project B is also the one whose `listConnections` returns 403 for this key (finding 30), so the
 likeliest explanation is a permission or plan boundary. **A 500 is the wrong status for that** - a
 refusal the caller could act on is being reported as a server fault, with no message distinguishing it
 from a genuine internal error. That is the part worth reporting to Peaka.

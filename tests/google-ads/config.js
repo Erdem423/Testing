@@ -2,10 +2,10 @@
  * Runtime configuration for the Google Ads connector folder.
  *
  * A FOURTH connector, and the first that does NOT live in the main Peaka
- * project. Stripe, Postgres and MongoDB all share one project (z8mo8AxO) -
+ * project. Stripe, Postgres and MongoDB all share one project -
  * only the catalog differs between them, so the framework never needed to
  * know more than one PEAKA_API_KEY/PEAKA_PROJECT_ID. The instructor's Google
- * Ads connection lives in a SEPARATE project (uLgI0O4j) with its own key,
+ * Ads connection lives in a SEPARATE project with its own key,
  * which is what apiKeyEnv/projectIdEnv exist for - see helpers/env.js's
  * checkCredentials(). Everything downstream (buildCtx.js, cleanup.js, every
  * scenario file) needs no changes: it still just reads ctx.client, built from
