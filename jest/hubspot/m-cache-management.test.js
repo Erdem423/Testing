@@ -10,6 +10,7 @@
  * itself, so nothing is shared.
  */
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
+const { skipUnless } = require("../../helpers/preflight");
 const { checkWithToken } = require("../../tests/hubspot/checkTokenCredentials");
 const check = checkWithToken();
 const { withScenario } = require("../../helpers/stepReporter");
@@ -19,11 +20,11 @@ const { runCacheManagement } = require("../../tests/hubspot/m-cache-management")
 let ctx = null;
 
 // SKIP, not FAIL, when credentials are missing/placeholder - see helpers/env.js.
-const maybeTest = check.ok ? test : test.skip;
-if (!check.ok) console.warn(`Skipping M: Cache Management Endpoints (HubSpot) - credentials not configured:\n${check.errors.join("\n")}`);
-
+const gate = skipUnless(check, "M: Cache Management Endpoints", "It caches fixture tables in a private catalog so it cannot collide with C's cached tables in the shared one - and a private catalog needs its own connection.");
+const maybeTest = gate.ok ? test : test.skip;
+if (!gate.ok) console.warn(`Skipping ${gate.name}`);
 maybeTest(
-  "M: Cache Management Endpoints",
+  gate.name,
   async () => {
     requireCredentials("hubspot");
     ctx = buildFreshCtx("hubspot");

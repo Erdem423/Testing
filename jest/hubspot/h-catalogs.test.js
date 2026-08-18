@@ -9,6 +9,7 @@
  * itself, so nothing is shared.
  */
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
+const { skipUnless } = require("../../helpers/preflight");
 const { checkWithToken } = require("../../tests/hubspot/checkTokenCredentials");
 const check = checkWithToken();
 const { withScenario } = require("../../helpers/stepReporter");
@@ -18,11 +19,11 @@ const { runCatalogs } = require("../../tests/hubspot/h-catalogs");
 let ctx = null;
 
 // SKIP, not FAIL, when credentials are missing/placeholder - see helpers/env.js.
-const maybeTest = check.ok ? test : test.skip;
-if (!check.ok) console.warn(`Skipping H: Catalog Endpoints (HubSpot) - credentials not configured:\n${check.errors.join("\n")}`);
-
+const gate = skipUnless(check, "H: Catalog Endpoints", "It creates and deletes its own catalog, so it needs its own connection - it must never touch the shared PEAKA_HUBSPOT_CATALOG_ID, and Peaka 500s on attaching a second catalog to an existing connection.");
+const maybeTest = gate.ok ? test : test.skip;
+if (!gate.ok) console.warn(`Skipping ${gate.name}`);
 maybeTest(
-  "H: Catalog Endpoints",
+  gate.name,
   async () => {
     requireCredentials("hubspot");
     ctx = buildFreshCtx("hubspot");

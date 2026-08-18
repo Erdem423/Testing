@@ -12,6 +12,7 @@
 // requireToken: false - this scenario never calls createConnection, so
 // HUBSPOT_ACCESS_TOKEN isn't needed (see helpers/env.js's checkCredentials).
 const { buildFreshCtx, requireCredentials, runTag, checkFor } = require("../../helpers/buildCtx");
+const { skipUnless } = require("../../helpers/preflight");
 const check = checkFor("hubspot");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
@@ -20,11 +21,11 @@ const { runQueries } = require("../../tests/hubspot/i-queries");
 let ctx = null;
 
 // SKIP, not FAIL, when credentials are missing/placeholder - see helpers/env.js.
-const maybeTest = check.ok ? test : test.skip;
-if (!check.ok) console.warn(`Skipping I: Saved Query Endpoints (HubSpot) - credentials not configured:\n${check.errors.join("\n")}`);
-
+const gate = skipUnless(check, "I: Saved Query Endpoints", "This one reads the shared catalog only - it needs no HubSpot token, just the connector's own settings.");
+const maybeTest = gate.ok ? test : test.skip;
+if (!gate.ok) console.warn(`Skipping ${gate.name}`);
 maybeTest(
-  "I: Saved Query Endpoints",
+  gate.name,
   async () => {
     requireCredentials("hubspot");
     ctx = buildFreshCtx("hubspot");

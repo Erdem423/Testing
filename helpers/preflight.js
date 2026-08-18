@@ -696,4 +696,47 @@ function gateFor(name, gateKey) {
   return g.ok ? { ok: true, name, reason: null } : { ok: false, name: `${name} ${SKIP_MARKER}${g.reason}]`, reason: g.reason };
 }
 
-module.exports = { measure, load, gate, gatedTest, gateFor, PREFLIGHT_PATH, SKIP_MARKER };
+/**
+ * gateFor()'s shape for a check that is NOT a preflight gate - a plain
+ * { ok, errors } credential result from checkCredentials()/checkFor()/
+ * tests/hubspot/checkTokenCredentials.js.
+ *
+ * WHY IT EXISTS: those files were doing
+ *
+ *   const maybeTest = check.ok ? test : test.skip;
+ *   if (!check.ok) console.warn(`Skipping ... ${check.errors.join("
+")}`);
+ *
+ * which reports the reason to the CONSOLE and nowhere else. The reason has to
+ * ride on the test NAME to survive into the dashboard - jest/browserReporter.js
+ * runs in a forked child and only ever sees titles and statuses, so it parses
+ * SKIP_MARKER back off and sends `skipReason` as its own field. A bare
+ * test.skip therefore rendered as "skipped" with no explanation at all, while
+ * every gate-skipped scenario beside it explained itself.
+ *
+ * `why` is the scenario-specific half - what this particular test needs the
+ * missing credential FOR - appended to the check's own errors, which say
+ * which variable is missing.
+ */
+function skipUnless(check, name, why) {
+  if (check.ok) return { ok: true, name, reason: null };
+
+  // COMPRESSED, because this ends up inside a test title. checkCredentials()
+  // emits one full sentence per missing variable ("Missing X. Set it in .env
+  // or export it in your shell."), so a run with nothing configured produced
+  // four copies of the same instruction before the part worth reading. The
+  // variable names are the information; the instruction is said once.
+  const errors = check.errors || [];
+  const missing = [];
+  const others = [];
+  for (const err of errors) {
+    const m = /^Missing ([A-Z0-9_]+)/.exec(err);
+    if (m) missing.push(m[1]);
+    else others.push(err);
+  }
+  const head = missing.length ? `Missing ${missing.join(", ")} - set them in .env or connect a key that reaches them.` : "";
+  const reason = [head, ...others, why].filter(Boolean).join(" ");
+  return { ok: false, name: `${name} ${SKIP_MARKER}${reason}]`, reason };
+}
+
+module.exports = { measure, load, gate, gatedTest, gateFor, skipUnless, PREFLIGHT_PATH, SKIP_MARKER };

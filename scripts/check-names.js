@@ -97,6 +97,11 @@ for (const folder of folders) {
     for (const m of src.matchAll(callPattern)) {
       titles.add(m[1]);
     }
+    // skipUnless(check, "Name", why) takes the name SECOND, unlike every
+    // other declaration form here - the check comes first because that is
+    // what decides whether the test runs at all. Its own pattern, rather
+    // than an entry in callNames, for exactly that reason.
+    for (const m of src.matchAll(/\bskipUnless\(\s*[^,]+,\s*\r?\n?\s*"([^"]+)"/g)) titles.add(m[1]);
     for (const m of src.matchAll(/withScenario\(\s*"([^"]+)"/g)) scenarioArgs.add(m[1]);
   }
 

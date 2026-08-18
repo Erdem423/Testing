@@ -9,6 +9,7 @@
  * jest.config.js, runs only under `npm run test:races`.
  */
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
+const { skipUnless } = require("../../helpers/preflight");
 const { checkWithToken } = require("../../tests/hubspot/checkTokenCredentials");
 const check = checkWithToken();
 const { withScenario } = require("../../helpers/stepReporter");
@@ -19,9 +20,9 @@ const { runTier1Races } = require("../../tests/hubspot-races/tier1");
 let ctx = null;
 
 // SKIP, not FAIL, when credentials are missing/placeholder - see helpers/env.js.
-const maybeTest = check.ok ? test : test.skip;
-if (!check.ok) console.warn(`Skipping HubSpot RACE-T1 - credentials not configured:\n${check.errors.join("\n")}`);
-
+const gate = skipUnless(check, "RACE-T1: Cache operation conflicts", "Every race tier drives its own throwaway connection and catalog concurrently, so it needs a token to create them.");
+const maybeTest = gate.ok ? test : test.skip;
+if (!gate.ok) console.warn(`Skipping ${gate.name}`);
 beforeAll(async () => {
   if (!check.ok) return;
   requireCredentials("hubspot");
@@ -29,7 +30,7 @@ beforeAll(async () => {
 }, 30000);
 
 maybeTest(
-  "RACE-T1: Cache operation conflicts",
+  gate.name,
   async () => {
     requireCredentials("hubspot");
     ctx = buildFreshCtx("hubspot");
