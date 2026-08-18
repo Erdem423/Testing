@@ -745,6 +745,7 @@
   const stopRunBtn = document.getElementById("stop-run-btn");
 
   const configWarning = document.getElementById("config-warning");
+  const configWarningTitle = document.getElementById("config-warning-title");
   const configNotice = document.getElementById("config-notice");
   const configNoticeText = document.getElementById("config-notice-text");
   const configErrors = document.getElementById("config-errors");
@@ -807,7 +808,19 @@
   // is on screen, so this only decides which panes get repainted.
   let currentFolderId = null;
 
-  let configOk = false;
+  // PER FOLDER, not one global. A single flag meant the LAST folder checked
+  // decided whether the Run buttons worked for ALL of them: open Stripe with
+  // no STRIPE_TEST_TOKEN and every other connector's buttons went dead too,
+  // under a banner naming a variable those connectors never read. Each
+  // folder's credentials are independent, so each folder's verdict is stored
+  // and read independently. Keyed by folder id; absent means "not checked
+  // yet", which stays non-startable exactly as the old `false` did.
+  const folderConfig = {};
+
+  function configOkFor(folderId) {
+    const cfg = folderId ? folderConfig[folderId] : null;
+    return Boolean(cfg && cfg.ok);
+  }
 
   function currentState() {
     return currentFolderId ? folderStates[currentFolderId] : null;
@@ -995,29 +1008,46 @@
     }
     const res = await fetch(url);
     const data = await res.json();
-    configOk = data.ok;
+    folderConfig[folderId] = { ok: data.ok, errors: data.errors || [], notice: data.notice || null };
 
-    // Shown on BOTH outcomes and cleared when absent - it describes what this
-    // connection resolved to, not whether the credentials passed.
-    if (data.notice) {
-      configNoticeText.textContent = data.notice;
+    // Several of these are in flight at once (switching folders, opening a
+    // chooser, a batch starting), and they do not come back in order. Only
+    // the folder actually on screen may paint the banner - otherwise a slow
+    // reply for a folder the user has already left overwrites the banner for
+    // the one they are looking at, which is how "Stripe needs a token" ended
+    // up displayed over MongoDB.
+    if (folderId === currentFolderId) renderConfigBanner(folderId);
+    updateButtonStates();
+  }
+
+  /** Paints the credential banner and the resolution notice for ONE folder. */
+  function renderConfigBanner(folderId) {
+    const cfg = folderConfig[folderId];
+
+    if (cfg && cfg.notice) {
+      configNoticeText.textContent = cfg.notice;
       configNotice.classList.remove("hidden");
     } else {
       configNotice.classList.add("hidden");
     }
 
-    if (data.ok) {
+    if (!cfg || cfg.ok) {
       configWarning.classList.add("hidden");
-    } else {
-      configErrors.innerHTML = "";
-      for (const err of data.errors) {
-        const li = document.createElement("li");
-        li.textContent = err;
-        configErrors.appendChild(li);
-      }
-      configWarning.classList.remove("hidden");
+      return;
     }
-    updateButtonStates();
+
+    // Names the suite. The old wording ("Credentials not configured") read as
+    // a whole-app failure, which is exactly how it was behaving.
+    const state = folderStates[folderId];
+    const label = state && state.folder ? state.folder.displayName : folderId;
+    configWarningTitle.textContent = `${label} is missing credentials.`;
+    configErrors.innerHTML = "";
+    for (const err of cfg.errors) {
+      const li = document.createElement("li");
+      li.textContent = err;
+      configErrors.appendChild(li);
+    }
+    configWarning.classList.remove("hidden");
   }
 
   // ---------- Rendering: a folder's own scenario list ----------
@@ -1556,7 +1586,7 @@
     const state = currentState();
     const selectedCount = state ? state.selected.size : 0;
     const running = Boolean(state && state.isRunning);
-    const startable = Boolean(state) && configOk && canStartClientSide(state.folder.id);
+    const startable = Boolean(state) && configOkFor(state.folder.id) && canStartClientSide(state.folder.id);
     runAllBtn.disabled = !startable;
     runSelectedBtn.disabled = !startable || selectedCount === 0;
     runSelectedLabel.textContent = running ? "Running…" : `Run Selected (${selectedCount})`;
