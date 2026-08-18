@@ -249,18 +249,24 @@ async function resolveDynamicConnectorConfig({ apiKey, projectId, connectionId, 
   const schemaNames = schemas.map((s) => (typeof s === "string" ? s : s.schemaName || s.name)).filter(Boolean);
   let picked = pickSchema(connectorId, schemaNames);
 
-  // MEASURE UNLESS THE USER SAID OTHERWISE. Only an explicit schemaEnv value
-  // short-circuits this - that is someone stating their intent, and it is
-  // honoured. Everything else is decided by looking at the catalog.
+  // MEASURE ONLY WHEN THERE IS NOTHING BETTER TO GO ON - that is, when neither
+  // an explicit schemaEnv value nor the connector's declared defaultSchema is
+  // present in this catalog.
   //
-  // `defaultSchema` used to win here, which made the suite quietly
-  // dataset-specific: it expected a schema NAMED `e_commerce` (or `crm`, or
-  // `payment`), announced its absence to the user as though something were
-  // wrong, and fell back to whatever was listed first. A connection holding
-  // 100,000 rows under a different name looked broken. The name a schema
-  // happens to have is not a property this suite should depend on, so
-  // defaultSchema is now only a tie-break between equally-populated schemas.
-  if (picked.source !== "env") {
+  // I briefly had measurement override defaultSchema, on the reasoning that
+  // depending on a schema being NAMED something made the suite
+  // dataset-specific. That conflated two different things and broke HubSpot:
+  // `crm` is not a fact about anyone's data, it is the connector's documented
+  // schema, the same way `payment` is Stripe's. Ranking by table count then
+  // chose `crm_associations` (56 join tables) over `crm` (25 tables holding
+  // contacts, companies and line_items), and four scenarios failed looking for
+  // tables that were one schema away.
+  //
+  // The real defect was narrower: when the declared schema is genuinely ABSENT
+  // - a MongoDB connection with no `e_commerce` - the fallback took whatever
+  // was listed first, which chose a 1-row Peaka scratch database over a
+  // 100,000-row one. That case, and only that case, is measured.
+  if (picked.source === "first-listed") {
     const measured = await chooseSchemaWithData(client, catalog.id, catalog.name, schemaNames, {
       preferred: (loadConnectorConfig(connectorId) || {}).defaultSchema,
     });
