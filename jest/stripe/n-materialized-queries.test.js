@@ -13,14 +13,24 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { gatedTest } = require("../../helpers/preflight");
+const { gateFor, skipUnless } = require("../../helpers/preflight");
+const { checkWithToken } = require("../../tests/stripe/checkTokenCredentials");
 const { runMaterializedQueries } = require("../../tests/stripe/n-materialized-queries");
 
 let ctx = null;
 
-gatedTest(
-  "N: Materialized Query Endpoints",
-  "stripe.configured",
+// TWO REASONS THIS CAN SKIP, reported separately. The preflight gate covers
+// "the connector has no data to work with"; the token check covers "this one
+// creates a Stripe connection and there is no key to create it with". Both
+// are legitimate, and collapsing them lost the distinction - see
+// tests/stripe/checkTokenCredentials.js.
+const tokenCheck = checkWithToken();
+const gate = tokenCheck.ok
+  ? gateFor("N: Materialized Query Endpoints", "stripe.configured")
+  : skipUnless(tokenCheck, "N: Materialized Query Endpoints", "It materializes `customers` in an isolated catalog it provisions itself - querying a table live while a cache on it syncs returns 0 rows, so it must not share C's catalog.");
+
+(gate.ok ? test : test.skip)(
+  gate.name,
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();

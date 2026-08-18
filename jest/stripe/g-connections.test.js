@@ -12,14 +12,24 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { gatedTest } = require("../../helpers/preflight");
+const { gateFor, skipUnless } = require("../../helpers/preflight");
+const { checkWithToken } = require("../../tests/stripe/checkTokenCredentials");
 const { runConnections } = require("../../tests/stripe/g-connections");
 
 let ctx = null;
 
-gatedTest(
-  "G: Connection Endpoints",
-  "stripe.configured",
+// TWO REASONS THIS CAN SKIP, reported separately. The preflight gate covers
+// "the connector has no data to work with"; the token check covers "this one
+// creates a Stripe connection and there is no key to create it with". Both
+// are legitimate, and collapsing them lost the distinction - see
+// tests/stripe/checkTokenCredentials.js.
+const tokenCheck = checkWithToken();
+const gate = tokenCheck.ok
+  ? gateFor("G: Connection Endpoints", "stripe.configured")
+  : skipUnless(tokenCheck, "G: Connection Endpoints", "It creates a real Stripe connection in Peaka with the token as the credential - that IS this scenario's subject.");
+
+(gate.ok ? test : test.skip)(
+  gate.name,
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();

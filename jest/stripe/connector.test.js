@@ -67,16 +67,22 @@ function buildFreshCtx() {
   const {
     PEAKA_API_KEY: apiKey,
     PEAKA_PROJECT_ID: projectId,
-    STRIPE_TEST_TOKEN: stripeToken,
     PEAKA_CATALOG_ID: catalogId,
     PEAKA_SCHEMA_NAME: schemaName,
   } = check.values;
 
+  // NOT from check.values - see helpers/buildCtx.js. The token is no longer in
+  // this connector's requiredEnv, and `values` only carries required names.
+  const stripeToken = process.env.STRIPE_TEST_TOKEN || null;
+
   return {
     client: new PeakaClient({ apiKey, projectId }),
     // C compares Peaka's cached customer count against Stripe's own count
-    // rather than against a number in .env, so it needs a Stripe client.
-    stripe: new StripeClient({ token: stripeToken }),
+    // rather than against a number in .env, so it needs a Stripe client - but
+    // only C, and only for one step. This file also builds the ctx for B and
+    // F, so constructing it unconditionally (StripeClient throws without a
+    // token) took all three down for a credential one of them uses once.
+    stripe: stripeToken ? new StripeClient({ token: stripeToken }) : null,
     stripeToken,
     catalogId,
     catalogNameFromConfig: process.env.PEAKA_CATALOG_NAME || null,

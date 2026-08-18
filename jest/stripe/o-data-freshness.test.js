@@ -18,16 +18,26 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { gatedTest } = require("../../helpers/preflight");
+const { gateFor, skipUnless } = require("../../helpers/preflight");
+const { checkWithToken } = require("../../tests/stripe/checkTokenCredentials");
 const { runDataFreshness } = require("../../tests/stripe/o-data-freshness");
 
 let ctx = null;
 
 // GATED: caches `customers` and asserts the baseline count exceeds the live
 // cap before it can measure whether a newly-created row reaches the cache.
-gatedTest(
-  "O: Data Freshness",
-  "stripe.customers",
+// TWO REASONS THIS CAN SKIP, reported separately. The preflight gate covers
+// "the connector has no data to work with"; the token check covers "this one
+// creates a Stripe connection and there is no key to create it with". Both
+// are legitimate, and collapsing them lost the distinction - see
+// tests/stripe/checkTokenCredentials.js.
+const tokenCheck = checkWithToken();
+const gate = tokenCheck.ok
+  ? gateFor("O: Data Freshness", "stripe.customers")
+  : skipUnless(tokenCheck, "O: Data Freshness", "It WRITES a customer to Stripe and provisions its own connection - asking whether a cache refresh picks up a new source row cannot be answered without both.");
+
+(gate.ok ? test : test.skip)(
+  gate.name,
   async () => {
     requireCredentials();
     ctx = buildFreshCtx();

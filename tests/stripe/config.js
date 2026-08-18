@@ -22,7 +22,15 @@ module.exports = {
   // picked connection to a schema, and "first one listed" is wrong for
   // several connectors. See helpers/peakaAccount.js's pickSchema().
   defaultSchema: "payment",
-  requiredEnv: ["STRIPE_TEST_TOKEN", "PEAKA_CATALOG_ID", "PEAKA_SCHEMA_NAME"],
+  // STRIPE_TEST_TOKEN IS DELIBERATELY NOT HERE, the same call HubSpot makes
+  // for HUBSPOT_ACCESS_TOKEN. requiredEnv is a precondition for the WHOLE
+  // folder, and only six of these twelve scenarios need Stripe's own API:
+  // G/H/L/M/N/O create a Stripe connection in Peaka. The other six read the
+  // existing catalog through Peaka like any other connector, so demanding a
+  // token of them made the entire suite - and the dashboard's Run button -
+  // unreachable without one. Those six gate themselves through
+  // tests/stripe/checkTokenCredentials.js.
+  requiredEnv: ["PEAKA_CATALOG_ID", "PEAKA_SCHEMA_NAME"],
 
   catalogIdEnv: "PEAKA_CATALOG_ID",
   schemaEnv: "PEAKA_SCHEMA_NAME",

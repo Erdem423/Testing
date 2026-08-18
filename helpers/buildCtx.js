@@ -60,7 +60,21 @@ function buildFreshCtx(connectorId = "stripe") {
   // connectors can point at different catalogs in the same project.
   const catalogId = check.values[config.catalogIdEnv || "PEAKA_CATALOG_ID"];
   const schemaName = check.values[config.schemaEnv || "PEAKA_SCHEMA_NAME"];
-  const stripeToken = check.values.STRIPE_TEST_TOKEN;
+  // FALLS BACK TO process.env, BUT ONLY FOR THE CONNECTOR THAT USES IT.
+  // checkCredentials() copies only the variables a connector DECLARES as
+  // required into `values`, and STRIPE_TEST_TOKEN is deliberately no longer
+  // one of them (see tests/stripe/config.js) - so reading `values` alone
+  // would report "no token" even when one is set, silently downgrading C's
+  // Stripe comparison on a fully configured machine.
+  //
+  // SCOPED TO usesStripeClient, because an unconditional read leaks: `token`
+  // below prefers stripeToken over the connector's own tokenEnv, so a machine
+  // with a Stripe key in its environment would have handed that key to
+  // HubSpot's connection-creating scenarios. Previously `values` happened to
+  // prevent that by omission; now it is stated.
+  const stripeToken = config.usesStripeClient
+    ? check.values.STRIPE_TEST_TOKEN || process.env.STRIPE_TEST_TOKEN || null
+    : check.values.STRIPE_TEST_TOKEN || null;
 
   return {
     connectorId,
@@ -68,7 +82,14 @@ function buildFreshCtx(connectorId = "stripe") {
     client: new PeakaClient({ apiKey, projectId }),
     // Built ONLY for connectors that declare it. It is the one client that
     // writes to an upstream system, so a Postgres run should not carry it.
-    stripe: config.usesStripeClient ? new StripeClient({ token: stripeToken }) : null,
+    // NULL WITHOUT A TOKEN, not a throw. StripeClient's constructor refuses to
+    // exist without one (correctly - it writes to a real account), and this
+    // line runs for every ctx in the folder, so an eager build meant a missing
+    // token took down B/C/F/I/J/K too - scenarios that never touch Stripe's
+    // API. Anything reading ctx.stripe must gate on
+    // tests/stripe/checkTokenCredentials.js, or self-skip the step that needs
+    // it (see c-data-and-cache.js's customer-count step).
+    stripe: config.usesStripeClient && stripeToken ? new StripeClient({ token: stripeToken }) : null,
     projectId,
     stripeToken,
     // Generic credential slot Stripe's own scenario files read directly

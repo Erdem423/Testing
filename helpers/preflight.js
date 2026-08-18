@@ -734,7 +734,9 @@ function skipUnless(check, name, why) {
     if (m) missing.push(m[1]);
     else others.push(err);
   }
-  const head = missing.length ? `Missing ${missing.join(", ")} - set them in .env or connect a key that reaches them.` : "";
+  const head = missing.length
+    ? `Missing ${missing.join(", ")} - set ${missing.length > 1 ? "them" : "it"} in .env, or connect a key that reaches ${missing.length > 1 ? "them" : "it"}.`
+    : "";
   const reason = [head, ...others, why].filter(Boolean).join(" ");
   return { ok: false, name: `${name} ${SKIP_MARKER}${reason}]`, reason };
 }

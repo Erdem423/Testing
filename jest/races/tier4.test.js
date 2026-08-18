@@ -16,7 +16,8 @@
 const { buildFreshCtx, requireCredentials, runTag } = require("../../helpers/buildCtx");
 const { withScenario } = require("../../helpers/stepReporter");
 const { cleanup } = require("../../helpers/cleanup");
-const { gateFor } = require("../../helpers/preflight");
+const { gateFor, skipUnless } = require("../../helpers/preflight");
+const { checkWithToken } = require("../../tests/stripe/checkTokenCredentials");
 const { assertSafeToRaceOrThrow } = require("../../helpers/racePreflight");
 const { runTier4Races } = require("../../tests/races/tier4");
 
@@ -24,7 +25,16 @@ const { runTier4Races } = require("../../tests/races/tier4");
 // so without Stripe credentials there is nothing to race against and the
 // tier must SKIP rather than throw. The beforeAll below is guarded too -
 // it performs live API calls that would fail the same way.
-const gate = gateFor("RACE-T4: Durable artifacts built mid-sync", "stripe.customers");
+// TWO WAYS TO SKIP, and they mean different things. The preflight gate is
+// "no data to race against"; the token check is "no key to build the
+// connection this tier races on". STRIPE_TEST_TOKEN left the connector's
+// requiredEnv so the six Peaka-only Stripe scenarios could run without one
+// (see tests/stripe/config.js) - which means these tiers, which do need it,
+// now have to say so themselves.
+const tokenCheck = checkWithToken();
+const gate = tokenCheck.ok
+  ? gateFor("RACE-T4: Durable artifacts built mid-sync", "stripe.customers")
+  : skipUnless(tokenCheck, "RACE-T4: Durable artifacts built mid-sync", "It WRITES to Stripe while a cache refreshes, so it needs the key both to create its connection and to make the change it is racing.");
 
 let ctx = null;
 

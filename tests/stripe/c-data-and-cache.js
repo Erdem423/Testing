@@ -602,6 +602,16 @@ async function runDataAndCache(ctx) {
     // The small allowance that remains covers a customer created by a
     // concurrently-running scenario (O writes to Stripe) landing between the
     // cache sync and this count.
+    // THE ONLY STEP IN C THAT TALKS TO STRIPE DIRECTLY. Everything else in
+    // this scenario goes through Peaka, so one missing token should cost this
+    // comparison and nothing more - see helpers/buildCtx.js.
+    if (!ctx.stripe) {
+      note(
+        `skipped: no STRIPE_TEST_TOKEN, so the cached count (${cached.customers}) cannot be compared against ` +
+          `Stripe's own. Every other check in this scenario still ran.`
+      );
+      return;
+    }
     const stripeTotal = await ctx.stripe.countCustomers();
     assert(
       stripeTotal > 0,
