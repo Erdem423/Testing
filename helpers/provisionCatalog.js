@@ -14,11 +14,12 @@ const { assertStatus, assert } = require("./assert");
  * A catalog does not need a NEW connection, only A connection - and the
  * project already has one.
  *
- * MEASURED, because the opposite was recorded for HubSpot and assumed general.
- * tests/hubspot/h-catalogs.js documents Peaka returning a real 500 on
- * createCatalog when a second catalog is attached to a connection that already
- * has one, reproduced across H/L/M/N, and a helper implementing this approach
- * was deleted as unworkable. That is a HubSpot behaviour, not a Peaka rule.
+ * MEASURED, because the opposite was recorded and mis-attributed. HubSpot's
+ * h-catalogs.js documents a real 500 from createCatalog when a second catalog
+ * is attached to an already-catalogued connection, reproduced across H/L/M/N -
+ * but the variable was the PROJECT, not the connection. The same call returns
+ * 500 for every connection in one project (Stripe's included) and 200 for
+ * every connection in another. See FINDINGS.md #38.
  * Probed against the live Stripe connection on 2026-08-18:
  *
  *   createCatalog on the existing stripe connection  -> 200
@@ -32,10 +33,10 @@ const { assertStatus, assert } = require("./assert");
  * sync behaviour, its own cache namespace. Exactly the isolation those four
  * scenarios wanted, at no credential cost.
  *
- * If Peaka ever starts refusing this for Stripe too, these scenarios should go
- * back to creating their own connection and gate on
- * tests/stripe/checkTokenCredentials.js again - the assertion below will say
- * so rather than failing somewhere deeper.
+ * In a project where createCatalog 500s (FINDINGS.md #38) this fails loudly
+ * rather than skipping, and the assertion below names the cause. That is
+ * deliberate: a 5xx is a product defect this suite exists to surface, and
+ * absorbing it would hide the very thing worth reporting.
  */
 async function provisionCatalogOnSharedConnection(ctx, name) {
   const cats = await ctx.client.listCatalogs();

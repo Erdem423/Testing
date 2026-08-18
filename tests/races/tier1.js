@@ -191,7 +191,7 @@ async function runTier1Races(ctx) {
     ) {
       console.log(
         `duplicate createCache mid-sync returned ${outcome.result.status}, not the expected 500 - ` +
-          `Peaka may have fixed this. Worth confirming by hand and updating README/HANDOFF.`
+          `Peaka may have fixed this. Worth confirming by hand and updating FINDINGS.md.`
       );
     }
 

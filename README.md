@@ -140,7 +140,7 @@ with missing/placeholder credentials has its scenarios reported as **skipped** (
 |---|---|
 | `PEAKA_API_KEY` | Peaka Studio → Developer ([guide](https://docs.peaka.com/how-to-guides/how-to-manage-partner-api-key)) |
 | `PEAKA_PROJECT_ID` | Your project's URL or settings in Peaka Studio |
-| `STRIPE_TEST_TOKEN` | A Stripe **test** secret key (`sk_test_…`). The suite refuses to run against a live key |
+| `STRIPE_TEST_TOKEN` | **Optional.** A Stripe **test** secret key (`sk_test_…`); the suite refuses a live key. Only `G` and `O` need it — the other ten Stripe scenarios run without one, and `C` skips a single step. See below |
 | `PEAKA_CATALOG_ID` | An existing Stripe catalog, created alongside its connection in Studio. `B` reads this catalog rather than creating one |
 | `PEAKA_CATALOG_NAME` | The catalog's SQL-queryable name. Used as a fallback if the live lookup fails |
 | `PEAKA_SCHEMA_NAME` | The Stripe connector's schema, e.g. `payment`. `B` cross-checks it against a live `listSchemas` |
@@ -324,8 +324,12 @@ session on server start (convenient for solo/local use), but nothing requires th
 dashboard specifically — `npm test` (the CLI path) is the one thing still reading them directly. Third-
 party credentials (`STRIPE_TEST_TOKEN`, `HUBSPOT_ACCESS_TOKEN`) still come from `.env` regardless of which
 project is picked — Peaka never returns a connection's real credential (it's masked), so there's no way to
-fetch these dynamically; they're only actually needed by the scenarios that create a **new** Peaka
-connection (`G`/`H`/`L`/`M`/`N` and the races) rather than read a pre-existing catalog. See
+fetch these dynamically. They are needed only by the scenarios that create a **new** Peaka *connection*:
+for Stripe that is `G` (connection CRUD is its subject) and `O` (it writes a customer to Stripe), plus the
+race tiers. `H`/`L`/`M`/`N` used to need one too, but they only ever wanted an isolated *catalog* — they now
+provision one on the connection already configured (`helpers/provisionCatalog.js`), so ten of the twelve
+Stripe scenarios run with no Stripe key at all. `C` keeps running and skips the one step that compares its
+cached count against Stripe's own. See
 `helpers/peakaAccount.js` for the discovery/resolution logic and `server.js`'s `session`/`classifyApiKey`
 for the connect flow.
 
@@ -688,4 +692,3 @@ to match the real `catalogType` string a live catalog of that connector reports 
 | [STRIPE_TEST_SCENARIOS.md](STRIPE_TEST_SCENARIOS.md) | Step-by-step breakdown of every Stripe scenario |
 | [HUBSPOT_TEST_SCENARIOS.md](HUBSPOT_TEST_SCENARIOS.md) | Step-by-step breakdown of every HubSpot scenario, plus how it differs from Stripe's |
 | [CONCURRENCY-SPEC.md](CONCURRENCY-SPEC.md) | Design and results of the concurrency suite |
-| [COVERAGE.md](COVERAGE.md) | Coverage against the original requirements |

@@ -48,7 +48,6 @@ cacheable or gain Stripe's statistics limitation.
 | — | An export started mid-sync failed while its control succeeded — *suggestive only*, exports also fail intermittently without a race | Low | Open, needs repeating |
 | — | **A materialized query built mid-sync captures ZERO rows, permanently** (Tier 4) | **High** | Open, reported not asserted |
 | — | Incremental sync **removes deleted rows but reports `numberOfDeletedRecords: 0`** (see *Incremental really is incremental*) | Low | Open, reported not asserted |
-| 8 | Eleven smaller quirks that break naive clients, several contradicting the reference | Low | Open, documented |
 | 9 | **`SqlExec` cannot write at all** — INSERT/UPDATE/DELETE/CTAS all `400` | **High** | Open — the instructor's spec assumes DML through this endpoint; it does not exist |
 | 10 | **CSV import silently accepts a mapping to a nonexistent column and writes `NULL`** | **High** | Open, asserted as a pinned deviation |
 | 11 | **No row-level UPDATE/DELETE endpoint exists anywhere** for internal tables | **High** | Open, asserted as a capability gap |
@@ -57,6 +56,7 @@ cacheable or gain Stripe's statistics limitation.
 | 14 | JSON columns are rejected for **both** internal table kinds, contradicting the spec's own claim that Peaka Table supports them | Medium | Open |
 | 15 | `getTableSample` is a **template generator and it conforms to the spec** — including the import round trip. Sole deviation: the header carries an undeclared `text` column. Required fixing a client bug (silent `null` body) to measure at all | Low | Conforms; asserted as a regression test |
 | 16 | Trino requires `OFFSET` before `LIMIT`; the reverse order (valid Postgres/MySQL) is a syntax error | Low | Documented, worth knowing when porting SQL |
+| 17 | Eleven smaller quirks that break naive clients, several contradicting the reference | Low | Open, documented |
 | 18 | **Import validates VALUES strictly and atomically, but MAPPINGS not at all** — same endpoint, opposite rigor. The strict half is asserted so it cannot quietly relax | — | Verified working, pinned as a regression test |
 | 19 | The 100-row cap does **not** apply to internal tables — a fifth confirmation it is Stripe-connector-specific | — | Verified working |
 | 20 | **CSV import appends unconditionally and never deduplicates** — combined with 9 and 11, a Peaka Table can only ever *grow*; a mistaken row can never be corrected or removed | **High** | Open, asserted |
@@ -77,6 +77,7 @@ cacheable or gain Stripe's statistics limitation.
 | 35 | The **Google Ads connector is measurably flaky** — the identical query intermittently returns correct data, a clean empty `200`, or an outright `400`, with no pattern found | Medium | Not a deterministic bug; retry-tolerant fixture built around it |
 | 36 | Paginating a Google Ads table by a **low-cardinality column silently overlaps pages** — standard SQL tie-breaking behavior, not a Peaka bug, but an easy trap. `resource_name` columns are the safe, unique choice | Low | Not a bug; test design lesson, asserted with the fix |
 | 37 | **Creating a Google Ads catalog needs OAuth secret/token even on an existing connection** — unlike Postgres/MongoDB, `{name, connectionId}` alone is rejected. Blocks connection-lifecycle and metadata-refresh scenarios | Medium | Access-scoping limitation, not a bug; scenarios scoped around it |
+| 38 | **`createCatalog` 500s for every connection in some projects** - the project decides, not the connection; corrects the HubSpot attribution | Medium | Open - reported behaviour, wrong status code for what is likely a permission boundary |
 
 Three endpoint paths in this repo's client were also wrong; see [Corrected endpoint paths](#corrected-endpoint-paths).
 
@@ -1397,6 +1398,35 @@ Practical consequence: `GA-G` is scoped down to the two assertions that don't ne
 secret/token this suite was never given. Not a bug — an access-scoping decision on Peaka's part — but worth
 recording so a future attempt to add those scenarios doesn't waste time assuming `connectionId` alone will
 work here the way it does for Postgres and MongoDB.
+
+## 38. `createCatalog` returns 500 for EVERY connection in some projects - the project decides, not the connection
+
+Measured 2026-08-18 across two projects on the same API key, creating a throwaway catalog on a
+connection that already had one, then deleting it:
+
+| Project | Connection | `createCatalog` |
+|---|---|---|
+| `9LBuaGGX` | MongoDB | **500** |
+| `9LBuaGGX` | Stripe | **500** |
+| `z8mo8AxO` | MongoDB | 200 (deleted cleanly) |
+| `z8mo8AxO` | Postgres | 200 (deleted cleanly) |
+
+**This corrects an earlier conclusion in this repo.** `tests/hubspot/h-catalogs.js` recorded that Peaka
+returns 500 when a second catalog is attached to a connection that already has one, reproduced across
+H/L/M/N, and a helper implementing that approach was deleted as unworkable. That reproduction was real
+but the attribution was wrong: every HubSpot run happened in `9LBuaGGX`, where the call fails for
+*every* connection including Stripe's, and the Stripe scenarios that later succeeded with the same call
+were running in `z8mo8AxO`. Two variables moved together and the wrong one got the blame - the lesson
+being that "reproduced four times" is not the same as "isolated".
+
+`9LBuaGGX` is also the project whose `listConnections` returns 403 for this key (finding 30), so the
+likeliest explanation is a permission or plan boundary. **A 500 is the wrong status for that** - a
+refusal the caller could act on is being reported as a server fault, with no message distinguishing it
+from a genuine internal error. That is the part worth reporting to Peaka.
+
+**Consequence for this suite:** any scenario that provisions its own catalog (MO-G, MO-I, the Stripe
+H/L/M/N, the HubSpot equivalents) can run in one project and not the other, through no fault of the
+connector or the data. It is not something the suite can work around - it fails loudly and says so.
 
 ## Server errors now have their own channel
 

@@ -14,6 +14,14 @@ const { step } = require("../../helpers/step");
  * for the confirmed OAuth2 credential shape. If this starts failing at the
  * connection-creation step specifically, that's the first thing to check.
  *
+ * ATTRIBUTION CORRECTED 2026-08-18 - see FINDINGS.md #38. The 500 below is
+ * real and reproducible, but it is a property of the PROJECT, not of attaching
+ * a second catalog to a connection: the same call returns 500 for every
+ * connection in this project and 200 for every connection in another. The
+ * Stripe scenarios now provision catalogs exactly this way
+ * (helpers/provisionCatalog.js) and succeed. The original note follows,
+ * because the observation itself was accurate.
+ *
  * TRIED AND REJECTED BY PEAKA (2026-08-12): attaching this scenario's catalog
  * to the EXISTING connection behind PEAKA_HUBSPOT_CATALOG_ID instead of
  * creating a new one - would have avoided needing a token at all, since

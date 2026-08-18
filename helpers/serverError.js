@@ -14,9 +14,9 @@ const { currentStore } = require("./stepReporter");
  * A 500 is Peaka's catch-all fallback. It means SERVER BUG, not "the response
  * differed from what the test expected", and the two deserve different
  * treatment. Until now helpers/assert.js could not tell them apart at all: a
- * 500 and a 400 produced byte-identical failure messages, and COVERAGE.md
- * already recorded the gap - "No '5xx is always a failure' invariant. Applied
- * ad hoc rather than globally."
+ * 500 and a 400 produced byte-identical failure messages. The gap was a known
+ * one - "no '5xx is always a failure' invariant, applied ad hoc rather than
+ * globally" - which is what this module closes.
  *
  * TOLERATED IS NOT ACCEPTED. Two steps deliberately pass while receiving a 500
  * (see tests/stripe/m-cache-management.js and tests/races/tier1.js) because the

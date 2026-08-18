@@ -4,9 +4,9 @@ const { resolveCatalogName } = require("../../helpers/resolveCatalogName");
 
 // Expected minimum columns per table. UNLIKE the Stripe version of this file,
 // only "id" is asserted here - real column names have NOT been confirmed
-// against a live listColumns(catalogId, "crm", tableName) call yet (no
-// HubSpot credentials were available while this was written; see the plan in
-// HANDOFF.md / the hubspot connector plan). Once real data is visible, widen
+// against a live listColumns(catalogId, "crm", tableName) call yet - no
+// HubSpot credentials were available while this was written. Once real data
+// is visible, widen
 // this the same way tests/stripe/b-catalog-schema.js does - e.g. contacts
 // likely exposes something like email/firstname/lastname, companies likely
 // exposes name/domain, deals likely exposes dealname/amount/dealstage - but

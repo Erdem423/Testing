@@ -567,6 +567,15 @@ async function resolveConnectorEnv(connectorId, projectId, connectionId) {
   if (config.projectIdEnv) overlay[config.projectIdEnv] = projectId;
   if (config.apiKeyEnv) overlay[config.apiKeyEnv] = apiKey;
 
+  // THE CONNECTION ID THE USER JUST PICKED. Several scenarios (MO-G, MO-I and
+  // their Postgres/Google Ads equivalents) provision a catalog on an EXISTING
+  // connection, so they need its id - not its credentials. Every connector
+  // config already declared connectionIdEnv and the preflight already gated on
+  // it, but nothing ever supplied the value, so those scenarios skipped with
+  // "PEAKA_MONGO_CONNECTION_ID is not set" while the id sat in the very
+  // request that triggered the run.
+  if (config.connectionIdEnv) overlay[config.connectionIdEnv] = connectionId;
+
   return { overlay, notice: resolved.schemaNotice || null };
 }
 

@@ -141,6 +141,63 @@ function pickSchema(connectorId, schemaNames) {
 }
 
 /**
+ * Picks the schema with the most data in it, by MEASURING rather than by
+ * position in the list.
+ *
+ * WHY: "the first schema listed" is not a heuristic, it is a coin flip. On a
+ * live MongoDB connection it chose `peaka_schema_db` - a Peaka scratch
+ * database holding one collection with ONE row - while `sample_training`
+ * (100,000 rows) and `sample_mflix` (21,349) sat further down the same list.
+ * Every scenario that needs a table bigger than the row cap then skipped, and
+ * the run looked like the connection had no data when it had plenty.
+ *
+ * A test suite should not depend on a schema being NAMED a particular thing.
+ * `defaultSchema` in tests/<id>/config.js stays as a preference - it is right
+ * nearly always and costs nothing to check - but when the catalog does not
+ * have it, this looks at what is actually there instead of guessing.
+ *
+ * DELIBERATELY BOUNDED, because this runs while someone waits on a dashboard
+ * click: schemas are ranked by table count first (pure metadata, no queries),
+ * then at most MAX_SCHEMAS_PROBED x MAX_TABLES_PROBED COUNT(*) queries run,
+ * and it stops at the first table big enough that no gate could want more.
+ */
+const MAX_SCHEMAS_PROBED = 4;
+const MAX_TABLES_PROBED = 2;
+const ENOUGH_ROWS = 100; // helpers/preflight.js's CAP_PROBE_MIN_ROWS - past this, no gate asks for more
+
+async function chooseSchemaWithData(client, catalogId, catalogName, schemaNames) {
+  const withTables = [];
+  for (const schemaName of schemaNames) {
+    const res = await client.listTables(catalogId, schemaName);
+    const tables = res.ok && Array.isArray(res.body) ? res.body.map((t) => t.tableName).filter(Boolean) : [];
+    if (tables.length) withTables.push({ schemaName, tables });
+  }
+  if (!withTables.length) return null;
+
+  withTables.sort((a, b) => b.tables.length - a.tables.length);
+
+  let best = null;
+  for (const candidate of withTables.slice(0, MAX_SCHEMAS_PROBED)) {
+    for (const tableName of candidate.tables.slice(0, MAX_TABLES_PROBED)) {
+      let rows = null;
+      try {
+        const res = await client.executeQuery(
+          { statement: `SELECT COUNT(*) AS cnt FROM "${catalogName}"."${candidate.schemaName}"."${tableName}"` },
+          "SIMPLE"
+        );
+        if (res.ok && res.body && res.body.data && res.body.data.length) rows = Number(res.body.data[0].cnt);
+      } catch (_) {
+        continue; // a table that will not answer is not the one to judge a schema by
+      }
+      if (rows === null) continue;
+      if (!best || rows > best.rows) best = { schemaName: candidate.schemaName, tableName, rows };
+      if (best.rows > ENOUGH_ROWS) return best;
+    }
+  }
+  return best || { schemaName: withTables[0].schemaName, tableName: null, rows: null };
+}
+
+/**
  * Resolves a picked project + connection down to the catalogId/schemaName
  * the existing test scenarios need (see helpers/buildCtx.js and each
  * connector's tests/<id>/config.js) - the dashboard's replacement for
@@ -183,7 +240,26 @@ async function resolveDynamicConnectorConfig({ apiKey, projectId, connectionId, 
   // "Could not determine a schema" the moment the picker started offering
   // them. `name` is kept as a tolerated alternative rather than assumed away.
   const schemaNames = schemas.map((s) => (typeof s === "string" ? s : s.schemaName || s.name)).filter(Boolean);
-  const picked = pickSchema(connectorId, schemaNames);
+  let picked = pickSchema(connectorId, schemaNames);
+
+  // Only when the connector's own preference is not in this catalog. The
+  // ordinary case (e_commerce / public / crm / payment present) never probes.
+  if (picked.source === "first-listed") {
+    const measured = await chooseSchemaWithData(client, catalog.id, catalog.name, schemaNames);
+    if (measured) {
+      const config = loadConnectorConfig(connectorId) || {};
+      const wanted = config.defaultSchema || (config.schemaEnv ? process.env[config.schemaEnv] : null);
+      picked = {
+        name: measured.schemaName,
+        source: "measured",
+        notice:
+          (wanted ? `This connection's catalog has no '${wanted}' schema. ` : "No schema is configured for this connector. ") +
+          `Measured the alternatives and picked '${measured.schemaName}'` +
+          (measured.tableName ? ` (largest sampled table: '${measured.tableName}', ${measured.rows} rows)` : "") +
+          `. Scenarios needing more rows than that will say so individually.`,
+      };
+    }
+  }
 
   if (!picked.name) {
     throw new Error("Could not determine a schema for this connection's catalog.");
