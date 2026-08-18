@@ -1,5 +1,5 @@
 const { assertStatus, assertStatusIn, assert, assertEqual } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { resolveLargeTable, withRetry } = require("./fixture");
 
 const POLL_INTERVAL_MS = 2000;
@@ -111,7 +111,7 @@ async function runGaMaterializedQueries(ctx) {
     if (result.value > ctx.expectedCustomerCountNonCache) {
       console.log(`materialized result holds ${result.value} of ${table.rowCount} rows - Stripe's equivalent freezes at ${ctx.expectedCustomerCountNonCache}`);
     } else {
-      console.log(
+      note(
         `materialized result holds all ${result.value} of ${table.rowCount} rows. Too few to also demonstrate ` +
           `it beats Stripe's ${ctx.expectedCustomerCountNonCache}-row cap - that half is skipped.`
       );

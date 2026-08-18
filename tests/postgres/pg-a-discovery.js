@@ -147,6 +147,16 @@ async function runPgDiscovery(ctx) {
     }
 
     console.log(`${total} tables across ${schemas.length} schemas, ${cacheable.length} cacheable`);
+    // PROVES IT LOOKED AT SOMETHING. "None of them are cacheable" is
+    // trivially true of zero tables, and the loop above `continue`s past any
+    // schema whose listTables did not return 200 - so a catalog answering 4xx
+    // everywhere used to satisfy this step in silence. The count was printed
+    // but never asserted.
+    assert(
+      total > 0,
+      `Examined 0 tables across ${schemas.length} schema(s), so "none are cacheable" proves nothing. ` +
+        `Either listTables is failing for every schema, or this catalog is empty.`
+    );
     assert(
       cacheable.length === 0,
       `Expected NO cacheable tables on a database connector, but found ${cacheable.length}: ` +

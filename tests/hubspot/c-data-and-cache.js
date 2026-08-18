@@ -1,5 +1,5 @@
 const { assertStatus, assertStatusIn, assert } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { resolveCatalogName } = require("../../helpers/resolveCatalogName");
 const { pollCacheUntilComplete } = require("../../helpers/pollCacheUntilComplete");
 
@@ -162,7 +162,7 @@ async function runDataAndCache(ctx) {
 
   await step("live counts are measured (no cap assumed for HubSpot)", async () => {
     if (skipLivePhase) {
-      console.log("skipped: tables were already cached (see previous step)");
+      note("skipped: tables were already cached (see previous step)");
       return;
     }
     live = await measureCounts(ctx);
@@ -184,7 +184,7 @@ async function runDataAndCache(ctx) {
   // asserts a specific expected count - see the module comment.
   await step("a live SELECT with a large LIMIT is logged for cap detection", async () => {
     if (skipLivePhase) {
-      console.log("skipped: tables were already cached");
+      note("skipped: tables were already cached");
       return;
     }
     const ids = await fetchIds(ctx, "contacts", 500);
@@ -198,11 +198,11 @@ async function runDataAndCache(ctx) {
 
   await step("live field-level spot check", async () => {
     if (skipLivePhase) {
-      console.log("skipped: tables were already cached");
+      note("skipped: tables were already cached");
       return;
     }
     if (live.contacts === 0) {
-      console.log("skipped: no contacts found - is the HubSpot sandbox seeded?");
+      note("skipped: no contacts found - is the HubSpot sandbox seeded?");
       return;
     }
     const sql = `SELECT id FROM ${qname(ctx, "contacts")} LIMIT 1`;
@@ -283,7 +283,7 @@ async function runDataAndCache(ctx) {
 
   await step("live vs cached comparison summary", async () => {
     if (skipLivePhase || !live) {
-      console.log("skipped: no live measurements taken this run (tables were already cached)");
+      note("skipped: no live measurements taken this run (tables were already cached)");
       return;
     }
     console.log("live vs cached counts:");
@@ -300,7 +300,7 @@ async function runDataAndCache(ctx) {
     assertStatus(res, 200, "listTables (finding a non-cacheable table)");
     const nonCacheable = res.body.find((t) => t.isCacheable === false);
     if (!nonCacheable) {
-      console.log("skipped: every table in this HubSpot catalog schema is cacheable, nothing to test here");
+      note("skipped: every table in this HubSpot catalog schema is cacheable, nothing to test here");
       return;
     }
     const createRes = await ctx.client.createCache({

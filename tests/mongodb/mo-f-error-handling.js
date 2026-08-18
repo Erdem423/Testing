@@ -1,5 +1,5 @@
 const { assertStatusIn, assertStatus, assert, assertEqual } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { resolveLargeTable } = require("./fixture");
 
 /**
@@ -77,7 +77,7 @@ async function runMoErrorHandling(ctx) {
     // assert on rejections and need no data whatsoever, so losing them to a
     // row-count gate was the worst case of over-gating in this folder.
     if (table.rowCount <= offsets[1] + pageSize) {
-      console.log(
+      note(
         `skipped: '${table.tableName}' has ${table.rowCount} rows - too few to page past the cap at ` +
           `offset ${offsets[1]}. The error-handling steps still ran.`
       );

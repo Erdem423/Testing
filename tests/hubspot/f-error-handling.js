@@ -1,5 +1,5 @@
 const { assertStatusIn, assertStatus, assert } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { resolveCatalogName } = require("../../helpers/resolveCatalogName");
 
 /**
@@ -40,7 +40,7 @@ async function runErrorHandling(ctx) {
     assertStatus(page2, 200, "line_items page2");
 
     if (page1.body.data.length === 0) {
-      console.log("skipped: no line_items to paginate - is the HubSpot sandbox seeded?");
+      note("skipped: no line_items to paginate - is the HubSpot sandbox seeded?");
       return;
     }
 

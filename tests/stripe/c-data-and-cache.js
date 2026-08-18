@@ -1,5 +1,5 @@
 const { assertStatus, assertStatusIn, assert, assertApprox, assertEqual } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { resolveCatalogName } = require("../../helpers/resolveCatalogName");
 const { pollCacheUntilComplete } = require("../../helpers/pollCacheUntilComplete");
 
@@ -400,7 +400,7 @@ async function runDataAndCache(ctx) {
 
   await step("live: the aggregate matches a total computed from the fetched rows", async () => {
     if (skipLivePhase) {
-      console.log("skipped: tables were already cached");
+      note("skipped: tables were already cached");
       return;
     }
     const r = await aggregateVsRaw(ctx, "charges", "amount");
@@ -421,7 +421,7 @@ async function runDataAndCache(ctx) {
 
   await step("live counts are capped at 100 on every table", async () => {
     if (skipLivePhase) {
-      console.log("skipped: tables were already cached (see previous step)");
+      note("skipped: tables were already cached (see previous step)");
       return;
     }
     live = await measureCounts(ctx);
@@ -449,7 +449,7 @@ async function runDataAndCache(ctx) {
   // goes red if Peaka fixes the pagination bug - that's the intended signal.
   await step("a live SELECT cannot return more than 100 rows", async () => {
     if (skipLivePhase) {
-      console.log("skipped: tables were already cached (see earlier step)");
+      note("skipped: tables were already cached (see earlier step)");
       return;
     }
     const cap = ctx.expectedCustomerCountNonCache;
@@ -468,7 +468,7 @@ async function runDataAndCache(ctx) {
 
   await step("live charge refund distribution is plausible", async () => {
     if (skipLivePhase) {
-      console.log("skipped: tables were already cached");
+      note("skipped: tables were already cached");
       return;
     }
     assert(live.charges > 0, `No charges visible. ${SEED_HINT}`);
@@ -488,7 +488,7 @@ async function runDataAndCache(ctx) {
 
   await step("live subscription status distribution is sane", async () => {
     if (skipLivePhase) {
-      console.log("skipped: tables were already cached");
+      note("skipped: tables were already cached");
       return;
     }
     assert(live.subscriptions > 0, `No subscriptions visible. ${SEED_HINT}`);
@@ -501,7 +501,7 @@ async function runDataAndCache(ctx) {
 
   await step("live field-level spot check on a specific seeded customer", async () => {
     if (skipLivePhase) {
-      console.log("skipped: tables were already cached");
+      note("skipped: tables were already cached");
       return;
     }
     // No "not found" guard any more: the target is whatever the live query
@@ -716,7 +716,7 @@ async function runDataAndCache(ctx) {
 
   await step("live vs cached comparison summary", async () => {
     if (skipLivePhase) {
-      console.log("skipped: no live measurements taken this run (tables were already cached)");
+      note("skipped: no live measurements taken this run (tables were already cached)");
       return;
     }
     console.log("live vs cached counts (live values are subject to the ~100-row COUNT(*) cap):");
@@ -733,7 +733,7 @@ async function runDataAndCache(ctx) {
     assertStatus(res, 200, "listTables (finding a non-cacheable table)");
     const nonCacheable = res.body.find((t) => t.isCacheable === false);
     if (!nonCacheable) {
-      console.log("skipped: every table in this Stripe catalog is cacheable, nothing to test here");
+      note("skipped: every table in this Stripe catalog is cacheable, nothing to test here");
       return;
     }
     const createRes = await ctx.client.createCache({

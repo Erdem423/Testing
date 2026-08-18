@@ -1,5 +1,5 @@
 const { assertStatus, assertStatusIn, assert, assertEqual } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { resolveLargeTable } = require("./fixture");
 
 const POLL_INTERVAL_MS = 2000;
@@ -138,7 +138,7 @@ async function runMoMaterializedQueries(ctx) {
           `Stripe's equivalent freezes at ${ctx.expectedCustomerCountNonCache}`
       );
     } else {
-      console.log(
+      note(
         `materialized result holds all ${materializedRows} of ${table.rowCount} rows. Too few to also ` +
           `demonstrate it beats Stripe's ${ctx.expectedCustomerCountNonCache}-row cap - that half is skipped.`
       );

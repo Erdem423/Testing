@@ -32,6 +32,11 @@ async function step(name, fn) {
   const warningsBefore = store && store.serverErrors ? store.serverErrors.length : 0;
   const newWarnings = () => (store && store.serverErrors ? store.serverErrors.slice(warningsBefore) : []);
 
+  // Notes are per-step and reset here, unlike warnings, which accumulate for
+  // the whole scenario and are therefore read as a delta.
+  if (store) store.stepNotes = [];
+  const notes = () => (store && store.stepNotes ? store.stepNotes.slice() : []);
+
   await emit({ type: "step-start", scenario, name, index });
 
   try {
@@ -47,6 +52,7 @@ async function step(name, fn) {
       // Distinguishes "this step failed" from "this step failed AND the server
       // errored", which are different problems with different owners.
       warnings: newWarnings(),
+      notes: notes(),
       serverError: !!(err && err.serverError),
     });
     if (store) store.stepName = null;
@@ -65,8 +71,32 @@ async function step(name, fn) {
     index,
     duration: Date.now() - startedAt,
     warnings: newWarnings(),
+    notes: notes(),
   });
   if (store) store.stepName = null;
 }
 
-module.exports = { step };
+/**
+ * Records something a reader needs to know about a step that still PASSED -
+ * overwhelmingly, "this half of the step could not be attempted".
+ *
+ * WHY NOT console.log, WHICH IS WHAT THESE ALL USED TO BE: the dashboard's
+ * event stream carries step-start/step-pass/step-fail and nothing else, so a
+ * step that skipped its most interesting assertion rendered as an ordinary
+ * green tick. Under `npm test` the console output was the whole story; from
+ * the browser it was invisible. This keeps the console line AND puts the same
+ * text on the step-pass event.
+ *
+ * NOT a warning: `warnings` means "passed while the server 5xx'd" and colours
+ * the whole scenario. A note changes no status - it is shown, not scored.
+ */
+function note(message) {
+  const store = currentStore();
+  if (store) {
+    if (!Array.isArray(store.stepNotes)) store.stepNotes = [];
+    store.stepNotes.push(String(message));
+  }
+  console.log(message);
+}
+
+module.exports = { step, note };

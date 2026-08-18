@@ -1,5 +1,5 @@
 const { assertStatus, assertStatusIn, assert, assertEqual } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { resolveLargeTable } = require("./fixture");
 
 /**
@@ -98,7 +98,7 @@ async function runPgQueries(ctx) {
     if (rows > ctx.expectedCustomerCountNonCache) {
       console.log(`saved query sees ${rows} rows - Stripe's equivalent would see ${ctx.expectedCustomerCountNonCache}`);
     } else {
-      console.log(
+      note(
         `saved query sees all ${rows} rows. Too few to also demonstrate it beats Stripe's ` +
           `${ctx.expectedCustomerCountNonCache}-row cap - that half is skipped.`
       );

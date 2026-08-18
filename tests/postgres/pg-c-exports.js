@@ -1,5 +1,5 @@
 const { assertStatus, assertStatusIn, assert, assertEqual } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { resolveLargeTable } = require("./fixture");
 
 const POLL_INTERVAL_MS = 3000;
@@ -128,7 +128,7 @@ async function runPgExports(ctx) {
     // mean anything. Gating the whole scenario on volume cost a project with
     // small tables all nine steps for the sake of this one.
     if (requested <= cap) {
-      console.log(
+      note(
         `skipped: table '${table.tableName}' has only ${table.rowCount} rows - too few to distinguish an ` +
           `uncapped export from a capped one (cap is ${cap}). The export lifecycle steps still ran.`
       );

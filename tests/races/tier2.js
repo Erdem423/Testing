@@ -1,5 +1,5 @@
 const { assertStatus, assertStatusIn, assert } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { assertNoServerError } = require("../../helpers/serverError");
 const { duringSync, duringExport, simultaneously, sleep } = require("../../helpers/raceWindow");
 
@@ -250,7 +250,7 @@ async function runTier2Races(ctx) {
   // findable nor deletable without Peaka's help. Opt in explicitly.
   await step("deleteCatalog racing a syncing cache (gated: RUN_RISKY_RACES)", async () => {
     if (process.env.RUN_RISKY_RACES !== "true") {
-      console.log(
+      note(
         "skipped: set RUN_RISKY_RACES=true to run this. It can strand a cache that no endpoint lists " +
           "(the schema-level status endpoint returns 500), which would need manual cleanup in Peaka."
       );

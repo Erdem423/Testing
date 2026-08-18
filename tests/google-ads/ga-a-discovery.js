@@ -1,5 +1,5 @@
 const { assertStatus, assert, assertEqual, assertIncludes } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { assertNoServerError } = require("../../helpers/serverError");
 const { resolveLargeTable, withRetry } = require("./fixture");
 
@@ -105,7 +105,7 @@ async function runGaDiscovery(ctx) {
     // (catalogs, schemas, tables, column types, the _q_* synthetic columns,
     // cacheability, cache refusal) works against any table at all.
     if (table.rowCount <= 100) {
-      console.log(
+      note(
         `skipped: '${table.tableName}' has only ${table.rowCount} rows - too few to distinguish "uncapped" ` +
           `from "capped at 100". Everything else in this scenario still ran.`
       );
@@ -137,6 +137,16 @@ async function runGaDiscovery(ctx) {
     assertStatus(res, 200, "listTables");
     const cacheable = (res.body || []).filter((t) => t.isCacheable);
     console.log(`${(res.body || []).length} tables, ${cacheable.length} cacheable`);
+    // PROVES IT LOOKED AT SOMETHING - "none are cacheable" is trivially true
+    // of an empty list. A bad status is already loud here (assertStatus
+    // above), but an empty 200 is not, and this is the one connector whose
+    // module comment documents exactly that shape as a known flake.
+    assert(
+      (res.body || []).length > 0,
+      `listTables('${ctx.schemaName}') returned 200 with no tables, so "none are cacheable" proves ` +
+        `nothing. Google Ads is known to answer with empty 200s (see the module comment) - re-run before ` +
+        `treating this as a catalog problem.`
+    );
     assert(
       cacheable.length === 0,
       `Expected NO cacheable tables on a Google Ads connector, but found ${cacheable.length}: ` +

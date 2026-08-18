@@ -280,6 +280,21 @@ body {
   flex-shrink: 0;
 }
 
+/* ---------- Config notice (informational, not a failure) ---------- */
+/* Deliberately NOT --warn: that hue is reserved for "passed but the server
+   5xx'd", and a resolved-to-a-different-schema note is neither a failure nor
+   a server error. Muted, same box shape as the error below it. */
+.config-notice {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.config-notice strong { color: var(--text); }
+
 /* ---------- Config warning ---------- */
 
 .config-warning {
@@ -694,6 +709,18 @@ body {
   display: flex;
   align-items: baseline;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* A note from helpers/step.js's note() - something a PASSING step could not
+   attempt. Full-width so it wraps under the step name rather than fighting
+   the duration for space on the same line. */
+.step-note {
+  flex-basis: 100%;
+  margin: 2px 0 4px 20px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 .step-icon {
   font-family: var(--font-mono);

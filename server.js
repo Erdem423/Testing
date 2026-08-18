@@ -507,6 +507,9 @@ function presentParam(v) {
   return v && v !== "null" && v !== "undefined" ? v : null;
 }
 
+/** Nothing to overlay - the caller falls back to process.env (the CLI path). */
+const NO_OVERLAY = { overlay: null, notice: null };
+
 async function resolveConnectorEnv(connectorId, projectId, connectionId) {
   // Belt and braces with the caller's own check: a client that stringifies a
   // missing id (encodeURIComponent(null) === "null") would otherwise get past
@@ -514,9 +517,12 @@ async function resolveConnectorEnv(connectorId, projectId, connectionId) {
   // is both wrong and impossible to act on.
   projectId = presentParam(projectId);
   connectionId = presentParam(connectionId);
-  if (!projectId) return null;
+  // { overlay, notice } rather than a bare overlay: the resolver can now
+  // report a non-fatal fact about its own choice (see helpers/peakaAccount.js's
+  // pickSchema), and that must reach the UI instead of being dropped here.
+  if (!projectId) return NO_OVERLAY;
   const config = loadConnectorConfig(connectorId);
-  if (!config) return null;
+  if (!config) return NO_OVERLAY;
 
   const apiKey = process.env.PEAKA_API_KEY;
   if (!apiKey || PLACEHOLDER_VALUES.has(apiKey)) {
@@ -536,8 +542,10 @@ async function resolveConnectorEnv(connectorId, projectId, connectionId) {
   // With a .env present the failure was quieter and worse: the run inherited
   // whatever project .env named, not the one picked in the UI.
   if (!connectionId) {
-    if (config.requiresConnection === false) return { PEAKA_PROJECT_ID: projectId };
-    return null;
+    if (config.requiresConnection === false) {
+      return { overlay: { PEAKA_PROJECT_ID: projectId }, notice: null };
+    }
+    return NO_OVERLAY;
   }
 
   const resolved = await resolveDynamicConnectorConfig({ apiKey, projectId, connectionId, connectorId });
@@ -559,7 +567,7 @@ async function resolveConnectorEnv(connectorId, projectId, connectionId) {
   if (config.projectIdEnv) overlay[config.projectIdEnv] = projectId;
   if (config.apiKeyEnv) overlay[config.apiKeyEnv] = apiKey;
 
-  return overlay;
+  return { overlay, notice: resolved.schemaNotice || null };
 }
 
 app.get("/api/config-status", async (req, res) => {
@@ -589,13 +597,14 @@ app.get("/api/config-status", async (req, res) => {
   const connectorId = CREDENTIAL_CONNECTOR_FOR_FOLDER[folder] || folder || "stripe";
 
   let overlay;
+  let notice;
   try {
     // projectId/connectionId come from the dashboard's project/connector
     // picker - see public/app.js. Resolved into a per-request overlay rather
     // than written into process.env: several connectors can now be checked
     // and run concurrently, and a shared global would let whichever request
     // resolved last decide what every other one sees.
-    overlay = await resolveConnectorEnv(connectorId, req.query.projectId, req.query.connectionId);
+    ({ overlay, notice } = await resolveConnectorEnv(connectorId, req.query.projectId, req.query.connectionId));
   } catch (err) {
     return res.json({ ok: false, errors: [err.message] });
   }
@@ -609,11 +618,13 @@ app.get("/api/config-status", async (req, res) => {
   // a special case here. Individual scenarios that DO need the token
   // (G/H/L/M/N, races) still gate themselves correctly - see
   // tests/hubspot/checkTokenCredentials.js.
+  // `notice` rides along on BOTH outcomes: it describes what this connection
+  // resolved to, which is worth seeing whether or not the credentials pass.
   const check = checkCredentials(connectorId, overlay);
   if (check.ok) {
-    res.json({ ok: true });
+    res.json({ ok: true, notice });
   } else {
-    res.json({ ok: false, errors: check.errors });
+    res.json({ ok: false, errors: check.errors, notice });
   }
 });
 
@@ -641,7 +652,7 @@ app.get("/api/run-stream", async (req, res) => {
     // other's project/catalog between resolving and forking, and one could
     // silently execute against the other's project.
     const credConnectorId = CREDENTIAL_CONNECTOR_FOR_FOLDER[folderId] || folderId;
-    overlay = await resolveConnectorEnv(credConnectorId, req.query.projectId, req.query.connectionId);
+    ({ overlay } = await resolveConnectorEnv(credConnectorId, req.query.projectId, req.query.connectionId));
   } catch (err) {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: err.message }));

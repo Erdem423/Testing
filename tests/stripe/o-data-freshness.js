@@ -1,5 +1,5 @@
 const { assertStatus, assert, assertEqual } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { pollCacheUntilComplete } = require("../../helpers/pollCacheUntilComplete");
 
 const FRESHNESS_TABLE = "customers";
@@ -182,7 +182,7 @@ async function runDataFreshness(ctx) {
 
   await step("a full refresh is tried if incremental missed it", async () => {
     if (foundVia === "incremental") {
-      console.log("skipped: incremental already made the row visible, so there is nothing to fall back to");
+      note("skipped: incremental already made the row visible, so there is nothing to fall back to");
       return;
     }
     const res = await ctx.client.triggerFullRefresh(cacheId);
@@ -230,7 +230,7 @@ async function runDataFreshness(ctx) {
   // update and delete steps below for why.
   await step("the incremental moved a delta, not the whole table", async () => {
     if (foundVia !== "incremental") {
-      console.log(
+      note(
         `skipped: the row arrived via ${foundVia}, so the incremental execution record does not describe ` +
           `the sync that made it visible`
       );

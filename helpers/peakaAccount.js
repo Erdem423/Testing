@@ -108,13 +108,36 @@ const { loadConnectorConfig } = require("./env");
  *   2. a defaultSchema declared in tests/<id>/config.js
  *   3. the first schema listed, as a guess for a connector that declares
  *      neither
+ *
+ * RETURNS WHY, NOT JUST WHAT. Step 3 is a guess, and a silent guess is how a
+ * MongoDB connection holding `peaka_schema_db` (no `e_commerce` anywhere in
+ * it) came to run the whole folder against sample data and report "no
+ * collection exceeds 100 rows" - a confusing failure three layers away from
+ * its cause, exactly what the comment above warns about. The caller surfaces
+ * `notice` so the guess is visible before the run rather than deduced after
+ * it.
  */
 function pickSchema(connectorId, schemaNames) {
   const config = loadConnectorConfig(connectorId) || {};
   const fromEnv = config.schemaEnv ? process.env[config.schemaEnv] : null;
-  if (fromEnv && schemaNames.includes(fromEnv)) return fromEnv;
-  if (config.defaultSchema && schemaNames.includes(config.defaultSchema)) return config.defaultSchema;
-  return schemaNames[0] || config.defaultSchema || fromEnv || null;
+  if (fromEnv && schemaNames.includes(fromEnv)) return { name: fromEnv, source: "env", notice: null };
+  if (config.defaultSchema && schemaNames.includes(config.defaultSchema)) {
+    return { name: config.defaultSchema, source: "default", notice: null };
+  }
+
+  const guess = schemaNames[0] || config.defaultSchema || fromEnv || null;
+  if (!guess) return { name: null, source: "none", notice: null };
+
+  const wanted = config.defaultSchema || fromEnv;
+  return {
+    name: guess,
+    source: schemaNames[0] ? "first-listed" : "unverified-default",
+    notice: wanted
+      ? `This connection's catalog has no '${wanted}' schema, so the run will use '${guess}' instead ` +
+        `(schemas found: ${schemaNames.join(", ") || "none"}). Scenarios written around '${wanted}' may ` +
+        `find different data than they expect.`
+      : `No schema is configured for this connector, so the run will use the first one listed, '${guess}'.`,
+  };
 }
 
 /**
@@ -143,20 +166,39 @@ async function resolveDynamicConnectorConfig({ apiKey, projectId, connectionId, 
   }
 
   const schemasRes = await client.listSchemas(catalog.id);
-  const schemas = schemasRes.ok && Array.isArray(schemasRes.body) ? schemasRes.body : [];
+  // NOT SWALLOWED. This used to fall through to `[]` on any failure, which
+  // pickSchema then turned into "use the declared default" - so a 403 or a
+  // 500 became a run against a schema nobody had confirmed exists, with the
+  // status code never mentioned anywhere.
+  if (!schemasRes.ok) {
+    throw new Error(
+      `Could not list the schemas of catalog '${catalog.name}' (status ${schemasRes.status}), so there is ` +
+        `no way to tell which schema this connection should be tested against.`
+    );
+  }
+  const schemas = Array.isArray(schemasRes.body) ? schemasRes.body : [];
   // The API returns `schemaName`, not `name` - reading the wrong field made
   // this list ALWAYS empty, which went unnoticed because Stripe and HubSpot
   // both had a hardcoded default to fall back on. Every other connector hit
   // "Could not determine a schema" the moment the picker started offering
   // them. `name` is kept as a tolerated alternative rather than assumed away.
   const schemaNames = schemas.map((s) => (typeof s === "string" ? s : s.schemaName || s.name)).filter(Boolean);
-  const schemaName = pickSchema(connectorId, schemaNames);
+  const picked = pickSchema(connectorId, schemaNames);
 
-  if (!schemaName) {
+  if (!picked.name) {
     throw new Error("Could not determine a schema for this connection's catalog.");
   }
 
-  return { catalogId: catalog.id, catalogName: catalog.name, schemaName };
+  return {
+    catalogId: catalog.id,
+    catalogName: catalog.name,
+    schemaName: picked.name,
+    // Non-fatal, and deliberately not an error: running against another
+    // schema is often exactly right (a project whose Mongo connection holds
+    // only sample data still has plenty worth testing). It just must not
+    // happen invisibly.
+    schemaNotice: picked.notice,
+  };
 }
 
 module.exports = {

@@ -1,5 +1,5 @@
 const { assertStatusIn, assertStatus, assert, assertEqual } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { resolveLargeTable } = require("./fixture");
 
 /**
@@ -90,7 +90,7 @@ async function runPgErrorHandling(ctx) {
     // no rows at all, so a row count should never have decided whether they
     // ran.
     if (table.rowCount <= offsets[1] + pageSize) {
-      console.log(
+      note(
         `skipped: '${table.tableName}' has ${table.rowCount} rows - too few to page past the cap at ` +
           `offset ${offsets[1]}. The error-handling steps still ran.`
       );

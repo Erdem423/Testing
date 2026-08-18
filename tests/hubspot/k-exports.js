@@ -1,5 +1,5 @@
 const { assertStatus, assertStatusIn, assert, assertEqual } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 
 const POLL_INTERVAL_MS = 3000;
 const MAX_POLL_ATTEMPTS = 30; // ~90s
@@ -33,7 +33,7 @@ async function runExports(ctx) {
 
   await step("start a CSV export", async () => {
     if (!queryId) {
-      console.log("skipped: no query to export (previous step failed)");
+      note("skipped: no query to export (previous step failed)");
       return;
     }
     const res = await ctx.client.createQueryExport(queryId, { format: "CSV", limit: 100 });
@@ -44,7 +44,7 @@ async function runExports(ctx) {
 
   await step("poll the export until it reaches a terminal state", async () => {
     if (!exportId) {
-      console.log("skipped: no export job was started");
+      note("skipped: no export job was started");
       return;
     }
     const TERMINAL = ["SUCCEEDED", "FAILED", "CANCELLED", "EXPIRED"];
@@ -82,7 +82,7 @@ async function runExports(ctx) {
 
   await step("list exports includes this job", async () => {
     if (!exportId) {
-      console.log("skipped: no export job was started");
+      note("skipped: no export job was started");
       return;
     }
     const res = await ctx.client.listExports({ limit: 50 });
@@ -96,7 +96,7 @@ async function runExports(ctx) {
 
   await step("cancel is accepted and idempotent", async () => {
     if (!exportId) {
-      console.log("skipped: no export job was started");
+      note("skipped: no export job was started");
       return;
     }
     const first = await ctx.client.cancelExport(exportId);

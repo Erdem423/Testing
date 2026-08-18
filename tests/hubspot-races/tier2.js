@@ -1,5 +1,5 @@
 const { assertStatus, assertStatusIn, assert } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { duringSync, duringExport, simultaneously, sleep } = require("../../helpers/raceWindow");
 
 // UNVERIFIED PLACEHOLDER - a well-formed but wrong HubSpot credential. The
@@ -203,7 +203,7 @@ async function runTier2Races(ctx) {
 
   await step("deleteCatalog racing a syncing cache (gated: RUN_RISKY_RACES)", async () => {
     if (process.env.RUN_RISKY_RACES !== "true") {
-      console.log(
+      note(
         "skipped: set RUN_RISKY_RACES=true to run this. It can strand a cache that no endpoint lists, " +
           "which would need manual cleanup in Peaka."
       );

@@ -1,5 +1,5 @@
 const { assertStatusIn, assertStatus, assert, assertEqual } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { resolveLargeTable, withRetry } = require("./fixture");
 
 /**
@@ -94,7 +94,7 @@ async function runGaErrorHandling(ctx) {
     // Self-skips rather than failing. The error-handling steps above assert on
     // rejections and need no rows at all - see tests/postgres/pg-f-error-handling.js.
     if (table.rowCount <= offsets[1] + pageSize) {
-      console.log(
+      note(
         `skipped: '${table.tableName}' has ${table.rowCount} rows - too few to page past the cap at ` +
           `offset ${offsets[1]}. The error-handling steps still ran.`
       );

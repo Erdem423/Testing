@@ -1,5 +1,5 @@
 const { assertStatus, assertStatusIn, assert, assertEqual } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { resolveLargeTable, withRetry } = require("./fixture");
 
 /**
@@ -85,7 +85,7 @@ async function runGaQueries(ctx) {
     if (result.value > ctx.expectedCustomerCountNonCache) {
       console.log(`saved query sees ${result.value} rows - Stripe's equivalent would see ${ctx.expectedCustomerCountNonCache}`);
     } else {
-      console.log(
+      note(
         `saved query sees all ${result.value} rows. Too few to also demonstrate it beats Stripe's ` +
           `${ctx.expectedCustomerCountNonCache}-row cap - that half is skipped.`
       );

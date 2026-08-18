@@ -745,6 +745,8 @@
   const stopRunBtn = document.getElementById("stop-run-btn");
 
   const configWarning = document.getElementById("config-warning");
+  const configNotice = document.getElementById("config-notice");
+  const configNoticeText = document.getElementById("config-notice-text");
   const configErrors = document.getElementById("config-errors");
 
   const badgesEl = document.getElementById("badges");
@@ -994,6 +996,16 @@
     const res = await fetch(url);
     const data = await res.json();
     configOk = data.ok;
+
+    // Shown on BOTH outcomes and cleared when absent - it describes what this
+    // connection resolved to, not whether the credentials passed.
+    if (data.notice) {
+      configNoticeText.textContent = data.notice;
+      configNotice.classList.remove("hidden");
+    } else {
+      configNotice.classList.add("hidden");
+    }
+
     if (data.ok) {
       configWarning.classList.add("hidden");
     } else {
@@ -1522,6 +1534,17 @@
         dur.textContent = `${live.duration}ms`;
         li.appendChild(dur);
       }
+
+      // Rendered under the step rather than beside it: these run to a
+      // sentence or two ("too few rows to tell an uncapped export from a
+      // capped one"), which is the point - a bare "skipped" would be no
+      // better than the green tick it replaces.
+      for (const text of (live && live.notes) || []) {
+        const noteEl = document.createElement("div");
+        noteEl.className = "step-note";
+        noteEl.textContent = text;
+        li.appendChild(noteEl);
+      }
       list.appendChild(li);
     }
     detailBodyEl.appendChild(list);
@@ -1649,6 +1672,10 @@
         if (event.scenario) {
           if (!state.steps[event.scenario]) state.steps[event.scenario] = {};
           const warnings = event.warnings || [];
+          // Notes deliberately do NOT feed `status` - see helpers/step.js's
+          // note(). A step that skipped half its work still passed; the note
+          // is what stops that being invisible.
+          const notes = event.notes || [];
           state.steps[event.scenario][event.name] = {
             // A step that passed while seeing a 5xx is "warn", not "pass" -
             // the distinction Jest itself cannot express, so it is derived
@@ -1664,6 +1691,7 @@
             duration: event.duration,
             message: event.message,
             warnings,
+            notes,
           };
           // Refresh the centre list on every step event so per-row progress
           // updates for ALL scenarios, not just the selected one. The right

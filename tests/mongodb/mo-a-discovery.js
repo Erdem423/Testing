@@ -1,5 +1,5 @@
 const { assertStatus, assert, assertEqual, assertIncludes } = require("../../helpers/assert");
-const { step } = require("../../helpers/step");
+const { step, note } = require("../../helpers/step");
 const { assertNoServerError } = require("../../helpers/serverError");
 
 // A schema with hundreds of collections would otherwise turn this into a long scan.
@@ -118,7 +118,7 @@ async function runMoDiscovery(ctx) {
     // with only sample data lost all ten, which is why the gate moved to
     // anyTable and the requirement lives here instead.
     if (rowCount <= 100) {
-      console.log(
+      note(
         `skipped: '${tableName}' has only ${rowCount} rows - too few to distinguish "uncapped" ` +
           `from "capped at 100". Everything else in this scenario still ran.`
       );
@@ -160,6 +160,16 @@ async function runMoDiscovery(ctx) {
       }
     }
     console.log(`${total} collection(s) across ${schemas.length} schema(s), ${cacheable.length} cacheable`);
+    // PROVES IT LOOKED AT SOMETHING. "None of them are cacheable" is
+    // trivially true of zero tables, and the loop above `continue`s past any
+    // schema whose listTables did not return 200 - so a catalog answering 4xx
+    // everywhere used to satisfy this step in silence. The count was printed
+    // but never asserted.
+    assert(
+      total > 0,
+      `Examined 0 collections across ${schemas.length} schema(s), so "none are cacheable" proves nothing. ` +
+        `Either listTables is failing for every schema, or this catalog is empty.`
+    );
     assert(
       cacheable.length === 0,
       `Expected NO cacheable collections on a MongoDB connector, but found ${cacheable.length}: ` +

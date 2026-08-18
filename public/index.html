@@ -146,6 +146,14 @@
         <ul id="config-errors"></ul>
       </div>
 
+      <!-- Not an error: what this connection actually resolved to, when that
+           differs from what the connector expected. See helpers/peakaAccount.js's
+           pickSchema - a silent difference here used to surface as a confusing
+           failure several steps into the run. -->
+      <div id="config-notice" class="config-notice hidden" role="status">
+        <strong>Heads up.</strong> <span id="config-notice-text"></span>
+      </div>
+
       <div class="main-panes">
 
         <!-- Left: folder tree (the selected connector's scenarios) -->
