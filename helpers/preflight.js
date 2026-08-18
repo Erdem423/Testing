@@ -32,7 +32,13 @@ const { PeakaClient } = require("./peakaClient");
  *     behaviour of running and failing honestly.
  */
 
-const PREFLIGHT_PATH = path.join(__dirname, "..", "test-results", "preflight.json");
+// PER-RUN WHEN ASKED. The dashboard can have several folders running at once,
+// each resolved against a different project or connection, so a single shared
+// file would let whichever finished measuring last decide what every other run
+// believes about its data. server.js gives each child its own path.
+const PREFLIGHT_PATH = process.env.PEAKA_PREFLIGHT_PATH
+  ? path.resolve(process.env.PEAKA_PREFLIGHT_PATH)
+  : path.join(__dirname, "..", "test-results", "preflight.json");
 
 // Appended to a skipped test's NAME so the reason survives into Jest output,
 // the JUnit XML, and the incompleteRun reporter without a cross-process channel.
@@ -91,6 +97,17 @@ async function countRows(client, catalogName, schemaName, tableName, { attempts 
       `This is an API/config failure, not missing data - refusing to treat it as "nothing to test".`
   );
 }
+
+// The gate names each connector publishes, so a scoped-out one can still
+// answer every question asked of it (with "not measured", never OPEN).
+const GATE_NAMES = {
+  stripe: ["configured", "customers", "charges", "subscriptions", "invoices", "refunds"],
+  postgres: ["anyTable", "largeTable", "connectionId", "credentials"],
+  mongodb: ["anyTable", "largeTable", "connectionId"],
+  googleAds: ["anyTable", "largeTable", "connectionId"],
+  peakaTables: ["biTableWithData", "federatedJoin"],
+  hubspot: [],
+};
 
 async function measureStripe() {
   const check = checkCredentials("stripe");
@@ -607,16 +624,59 @@ async function measureGoogleAds() {
   };
 }
 
-async function measure() {
+/**
+ * SCOPED WHEN ASKED. `npm test` runs every folder and so measures everything,
+ * but a dashboard run executes ONE folder - and measuring the rest made that
+ * run hostage to connectors it never touches. Measuring is deliberately fatal
+ * on an API failure (see the module header), so a Stripe catalog that answers
+ * 404 in some project killed a MongoDB run outright before a single test
+ * loaded. Whatever is not measured reports as such, in those words, rather
+ * than as "no data".
+ */
+const MEASURERS = {
+  stripe: measureStripe,
+  postgres: measurePostgres,
+  mongodb: measureMongoDB,
+  googleAds: measureGoogleAds,
+  peakaTables: measurePeakaTables,
+};
+
+// Folder ids that are not connector keys in the report above.
+const REPORT_KEY_FOR_FOLDER = {
+  "google-ads": "googleAds",
+  "peaka-tables": "peakaTables",
+  races: "stripe",
+  "hubspot-races": "hubspot",
+};
+
+function notMeasured(scope) {
+  return unavailable(`not measured - this run is scoped to the '${scope}' folder`);
+}
+
+async function measure({ only } = {}) {
   loadDotEnv();
-  const report = {
-    measuredAt: new Date().toISOString(),
-    stripe: await measureStripe(),
-    postgres: await measurePostgres(),
-    mongodb: await measureMongoDB(),
-    googleAds: await measureGoogleAds(),
-    peakaTables: await measurePeakaTables(),
-  };
+  const scope = only ? REPORT_KEY_FOR_FOLDER[only] || only : null;
+
+  // peakaTables is always measured: its federatedJoin gate is composite and
+  // several of its scenarios are the control for other connectors' claims.
+  const wanted = scope ? new Set([scope, "peakaTables"]) : null;
+
+  const report = { measuredAt: new Date().toISOString() };
+  for (const [key, measurer] of Object.entries(MEASURERS)) {
+    if (wanted && !wanted.has(key)) {
+      report[key] = { configured: false, scopedOut: true, gates: {} };
+      continue;
+    }
+    report[key] = await measurer();
+  }
+
+  // Fill the scoped-out connectors' gate names from a measured shape, so
+  // gate() answers with "not measured" rather than defaulting OPEN and letting
+  // a scenario run against an environment nobody looked at.
+  for (const [key, result] of Object.entries(report)) {
+    if (!result || !result.scopedOut) continue;
+    for (const name of GATE_NAMES[key] || []) result.gates[name] = notMeasured(only);
+  }
 
   // A COMPOSITE GATE, because one scenario needs TWO connectors. The federated
   // join asks whether the Stripe cap survives a join, and proves the join

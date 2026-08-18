@@ -719,6 +719,22 @@ app.get("/api/run-stream", async (req, res) => {
 
   const stepReportUrl = `http://127.0.0.1:${PORT}/api/step-event?runId=${runId}`;
 
+  // THIS RUN'S OWN PREFLIGHT FILE, and a globalSetup below to fill it.
+  //
+  // Dashboard runs used to read whatever test-results/preflight.json a past
+  // `npm test` had left behind, because this inline Jest config declared no
+  // globalSetup and nothing else re-measured. Pick a project in the browser
+  // whose data differs from that stale file - or simply run the dashboard on a
+  // machine whose last CLI run had no .env - and every scenario skipped with
+  // "connector not configured (missing PEAKA_*)" while the connection sat
+  // there fully resolved. The gates were answering a question about a
+  // different environment entirely.
+  //
+  // Per-run rather than shared: several folders can run at once against
+  // different projects, and one shared file would let the last writer decide
+  // what all of them believe.
+  const preflightPath = path.join(__dirname, "test-results", `preflight-${runId}.json`);
+
   // Reap only records whose owning process is gone, rather than wiping the
   // whole directory as this used to. With concurrent runs the directory holds
   // one pid file per live run, and a blanket delete here would destroy a
@@ -742,6 +758,10 @@ app.get("/api/run-stream", async (req, res) => {
       // clobbering each other's before either forks.
       ...(overlay || {}),
       PEAKA_STEP_REPORT_URL: stepReportUrl,
+      PEAKA_PREFLIGHT_PATH: preflightPath,
+      // Measure only what this run executes - see helpers/preflight.js's
+      // measure({ only }).
+      PEAKA_MEASURE_ONLY: folderId,
       JEST_RUN_CONFIG: JSON.stringify({
         // Same project config (jest.config.js) plus our streaming reporter
         // added alongside the normal ones - junit.xml still gets written.
@@ -749,6 +769,9 @@ app.get("/api/run-stream", async (req, res) => {
         // running the Stripe folder never touches another connector's tests.
         config: JSON.stringify({
           testEnvironment: "node",
+          // Measures this run's ACTUAL target before any test file loads - see
+          // preflightPath above for what its absence used to cause.
+          globalSetup: path.join(__dirname, "jest.globalSetup.js"),
           testMatch: [`**/jest/${connector.id}/**/*.test.js`],
           testTimeout: 30000,
           reporters: [
@@ -767,6 +790,15 @@ app.get("/api/run-stream", async (req, res) => {
   });
 
   run.child.on("exit", (code) => {
+    // This run's preflight file has served its purpose - it describes one
+    // run's target and must never be inherited by another.
+    try {
+      fs.unlinkSync(preflightPath);
+    } catch (_) {
+      // Never fatal: a leftover measurement file is tidiness, not correctness,
+      // and the next run writes its own path anyway.
+    }
+
     if (run.cancelRequested) {
       // Jest's afterAll() cleanup never ran for whatever was mid-flight -
       // real Peaka resources it had already created may still exist. Said

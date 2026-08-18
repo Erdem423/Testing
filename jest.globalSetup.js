@@ -1,5 +1,6 @@
 const fs = require("fs");
 const { measure } = require("./helpers/preflight");
+const { autoConfigureConnectors } = require("./helpers/autoConfigure");
 const { SIDECAR_DIR } = require("./helpers/serverError");
 
 /**
@@ -26,7 +27,16 @@ module.exports = async () => {
     // Never fatal - a stale record is a reporting nuisance, not a test failure.
   }
 
-  const report = await measure();
+  // BEFORE measuring: fill in whatever the user did not set, by looking at the
+  // project. The preflight reads these env vars, so this has to run first.
+  // Set by server.js for a dashboard run, unset for `npm test`.
+  const only = process.env.PEAKA_MEASURE_ONLY || null;
+
+  await autoConfigureConnectors({ only, log: (msg) => console.log(`
+${msg}
+`) });
+
+  const report = await measure({ only });
 
   const lines = [];
   for (const [connector, result] of Object.entries(report)) {

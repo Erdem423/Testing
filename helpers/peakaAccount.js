@@ -165,7 +165,7 @@ const MAX_SCHEMAS_PROBED = 4;
 const MAX_TABLES_PROBED = 2;
 const ENOUGH_ROWS = 100; // helpers/preflight.js's CAP_PROBE_MIN_ROWS - past this, no gate asks for more
 
-async function chooseSchemaWithData(client, catalogId, catalogName, schemaNames) {
+async function chooseSchemaWithData(client, catalogId, catalogName, schemaNames, { preferred } = {}) {
   const withTables = [];
   for (const schemaName of schemaNames) {
     const res = await client.listTables(catalogId, schemaName);
@@ -174,7 +174,14 @@ async function chooseSchemaWithData(client, catalogId, catalogName, schemaNames)
   }
   if (!withTables.length) return null;
 
-  withTables.sort((a, b) => b.tables.length - a.tables.length);
+  // Table count first (free - it is metadata already fetched), the connector's
+  // declared preference only as a tie-break between equals.
+  withTables.sort((a, b) => {
+    if (b.tables.length !== a.tables.length) return b.tables.length - a.tables.length;
+    if (preferred && a.schemaName === preferred) return -1;
+    if (preferred && b.schemaName === preferred) return 1;
+    return 0;
+  });
 
   let best = null;
   for (const candidate of withTables.slice(0, MAX_SCHEMAS_PROBED)) {
@@ -242,22 +249,26 @@ async function resolveDynamicConnectorConfig({ apiKey, projectId, connectionId, 
   const schemaNames = schemas.map((s) => (typeof s === "string" ? s : s.schemaName || s.name)).filter(Boolean);
   let picked = pickSchema(connectorId, schemaNames);
 
-  // Only when the connector's own preference is not in this catalog. The
-  // ordinary case (e_commerce / public / crm / payment present) never probes.
-  if (picked.source === "first-listed") {
-    const measured = await chooseSchemaWithData(client, catalog.id, catalog.name, schemaNames);
+  // MEASURE UNLESS THE USER SAID OTHERWISE. Only an explicit schemaEnv value
+  // short-circuits this - that is someone stating their intent, and it is
+  // honoured. Everything else is decided by looking at the catalog.
+  //
+  // `defaultSchema` used to win here, which made the suite quietly
+  // dataset-specific: it expected a schema NAMED `e_commerce` (or `crm`, or
+  // `payment`), announced its absence to the user as though something were
+  // wrong, and fell back to whatever was listed first. A connection holding
+  // 100,000 rows under a different name looked broken. The name a schema
+  // happens to have is not a property this suite should depend on, so
+  // defaultSchema is now only a tie-break between equally-populated schemas.
+  if (picked.source !== "env") {
+    const measured = await chooseSchemaWithData(client, catalog.id, catalog.name, schemaNames, {
+      preferred: (loadConnectorConfig(connectorId) || {}).defaultSchema,
+    });
     if (measured) {
-      const config = loadConnectorConfig(connectorId) || {};
-      const wanted = config.defaultSchema || (config.schemaEnv ? process.env[config.schemaEnv] : null);
-      picked = {
-        name: measured.schemaName,
-        source: "measured",
-        notice:
-          (wanted ? `This connection's catalog has no '${wanted}' schema. ` : "No schema is configured for this connector. ") +
-          `Measured the alternatives and picked '${measured.schemaName}'` +
-          (measured.tableName ? ` (largest sampled table: '${measured.tableName}', ${measured.rows} rows)` : "") +
-          `. Scenarios needing more rows than that will say so individually.`,
-      };
+      // No notice: picking the schema with data in it IS the normal path, not
+      // an anomaly to warn about. Which one was chosen is already visible in
+      // the run - every discovery scenario logs its catalog and schema.
+      picked = { name: measured.schemaName, source: "measured", notice: null };
     }
   }
 
